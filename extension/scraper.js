@@ -692,9 +692,16 @@ const FBScraper = (() => {
     };
 
     const name = getProfileName();
+    const url = window.location.href;
+    const path = window.location.pathname;
 
-    // Random numbers in name
-    d.randomNumbers = /\d{2,}/.test(name);
+    // Random numbers in name OR username/URL
+    // e.g., "akancha.sharma.244252" has appended numbers = auto-generated username
+    d.randomNumbers = /\d{2,}/.test(name) || /\.\d{3,}/.test(path) || /\.\d{3,}/.test(url);
+
+    // Also check for @username with numbers (visible on page)
+    const usernameSpans = findSpans(/^@[\w.]*\d{3,}/);
+    if (usernameSpans.length > 0) d.randomNumbers = true;
 
     // Unusual formatting: ALL CAPS (but not short names), excessive symbols
     d.unusualFormatting =
@@ -705,8 +712,10 @@ const FBScraper = (() => {
       /\bx{3,}\b/i.test(name);
 
     // Vanity URL vs numeric ID
-    const url = window.location.href;
-    d.hasVanityUrl = !url.includes("profile.php?id=") && !/\/\d{10,}/.test(url);
+    // profile.php?id=, /61234567890, or auto-generated slug with numbers = no vanity URL
+    d.hasVanityUrl = !url.includes("profile.php?id=") &&
+      !/\/\d{10,}/.test(url) &&
+      !/\.\d{3,}/.test(path);  // akancha.sharma.244252 = auto-generated, not vanity
 
     // Former name / name changes
     const former = findContains("former name", "previously known as", "also known as");
