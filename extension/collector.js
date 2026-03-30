@@ -309,7 +309,40 @@ const FBCollector = (() => {
       engagementNames,
       hasCommentThreads: findSpans(/\d+\s*comments?/i).length >= 2 || findContains("reply","replies").length >= 1,
       taggedByOthers: /\b(was with|— with|is with|tagged)\b/i.test(pt),
+      // ── Like counts per post (for engagement ratio) ──
+      likeCounts: collectLikeCounts(),
     };
+  }
+
+  /** Collect like/reaction counts from visible posts. */
+  function collectLikeCounts() {
+    const counts = [];
+    // Method 1: aria-label on reaction summaries ("45 people reacted", "Ahmed and 12 others")
+    const reactionEls = $$('[aria-label*="reaction" i], [aria-label*="like" i], [aria-label*="people" i]');
+    for (const el of reactionEls) {
+      const label = el.getAttribute("aria-label") || "";
+      // "45" or "1.2K" or "Ahmed and 12 others"
+      const numMatch = label.match(/([\d,]+)/);
+      if (numMatch) {
+        const n = parseInt(numMatch[1].replace(/,/g, ""));
+        if (n > 0 && n < 1000000) counts.push(n);
+      }
+    }
+    // Method 2: Visible text like "45" or "1.2K" near reaction icons
+    const reactionSpans = findSpans(/^[\d,.]+[kK]?$/);
+    for (const o of reactionSpans) {
+      let text = o.text.toLowerCase().replace(/,/g, "");
+      let n = 0;
+      const kMatch = text.match(/([\d.]+)k/);
+      if (kMatch) n = Math.round(parseFloat(kMatch[1]) * 1000);
+      else n = parseInt(text);
+      // Only count if it looks like a reaction count (small numbers near posts)
+      if (n > 0 && n < 100000) {
+        const rect = o.el.getBoundingClientRect();
+        if (rect.top > 200) counts.push(n); // Skip header numbers
+      }
+    }
+    return counts;
   }
 
   // ── Phase 4: Friends List + Gender Ratio ─────────────────────────────
@@ -409,6 +442,25 @@ const FBCollector = (() => {
       identityConsistent: true,
       hasVanityUrl: !url.includes("profile.php?id=") && !/\/\d{10,}/.test(url) && !/\.\d{3,}/.test(path),
     };
+  }
+
+  // ── Engagement ratio calculation ───────────────────────────────────
+
+  function computeEngagementRatio(likeCounts, friendCount) {
+    if (!likeCounts || likeCounts.length === 0 || !friendCount || friendCount === 0) {
+      return { avgLikes: null, ratio: null, verdict: "no_data" };
+    }
+    const avgLikes = likeCounts.reduce((a, b) => a + b, 0) / likeCounts.length;
+    const ratio = avgLikes / friendCount;
+
+    // Verdict based on ratio
+    let verdict;
+    if (ratio >= 0.03) verdict = "healthy";        // 3%+ = very engaged audience
+    else if (ratio >= 0.01) verdict = "normal";     // 1-3% = normal
+    else if (ratio >= 0.003) verdict = "low";       // 0.3-1% = low but could be real
+    else verdict = "suspicious";                     // <0.3% = red flag (5000 friends, 10 likes)
+
+    return { avgLikes: Math.round(avgLikes), ratio: Math.round(ratio * 10000) / 100, verdict };
   }
 
   // ── Post timing analysis ─────────────────────────────────────────────
@@ -551,6 +603,9 @@ const FBCollector = (() => {
         relationshipSeeking: /looking for\s+(a\s+)?relationship/i.test(pageText()),
       },
       identity,
+      // ── Engagement ratio (likes vs friend count) — KILLER signal ──
+      engagementRatio: computeEngagementRatio(posts.likeCounts, friends.friendCount),
+
       // Raw data for dynamic scoring
       _raw: {
         engagementGender,
@@ -558,6 +613,9 @@ const FBCollector = (() => {
         engagementNames: posts.engagementNames.length,
         friendNamesScanned: friends.friendNames.length,
         timestampsFound: posts.timestamps.length,
+        likeCounts: posts.likeCounts,
+        avgLikes: posts.likeCounts.length > 0 ?
+          Math.round(posts.likeCounts.reduce((a, b) => a + b, 0) / posts.likeCounts.length) : null,
       },
     };
 
@@ -577,6 +635,8 @@ const FBCollector = (() => {
     console.log("Content:", data.content);
     console.log("Interaction:", data.interaction);
     console.log("Identity:", data.identity);
+    console.log("Engagement Ratio:", data.engagementRatio);
+    console.log("  → Like counts found:", posts.likeCounts);
     console.log(`Posts: ${posts.totalPosts} | Timestamps: ${posts.timestamps.length} | Thirsty: ${posts.thirstyCount}`);
     console.groupEnd();
 

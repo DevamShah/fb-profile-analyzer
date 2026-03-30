@@ -221,6 +221,38 @@ const FBAnalyzer = (() => {
     return { name: "Name & Identity", num: 9, weight: 0.05, score: clamp(s), flag: flag(clamp(s)), obs };
   }
 
+  // ── Signal 10: Engagement Ratio (likes vs friends) — KILLER signal ──
+
+  function scoreEngagementRatio(d) {
+    if (!d || !d.ratio || d.verdict === "no_data") {
+      return { name: "Engagement Ratio", num: 10, weight: 0.04, score: 70, flag: "clean",
+        obs: ["Engagement ratio data not available"], hasData: false };
+    }
+
+    let s = 70;
+    const obs = [];
+    const hasData = true;
+
+    if (d.verdict === "healthy") {
+      s = 90;
+      obs.push(`${d.ratio}% avg engagement rate — healthy audience (avg ${d.avgLikes} likes)`);
+    } else if (d.verdict === "normal") {
+      s = 75;
+      obs.push(`${d.ratio}% engagement rate — normal (avg ${d.avgLikes} likes)`);
+    } else if (d.verdict === "low") {
+      s = 45;
+      obs.push(`${d.ratio}% engagement rate — low for their network size (avg ${d.avgLikes} likes)`);
+    } else if (d.verdict === "suspicious") {
+      s = 15;
+      obs.push(`${d.ratio}% engagement rate — very suspicious, high friends but almost no likes (avg ${d.avgLikes} likes)`);
+    }
+
+    // Dynamic weight: with data this is VERY important
+    const weight = hasData ? 0.15 : 0.04;
+
+    return { name: "Engagement Ratio", num: 10, weight, score: clamp(s), flag: flag(clamp(s)), obs, hasData };
+  }
+
   // ── Dynamic scoring ──────────────────────────────────────────────────
 
   function computeDynamicScore(signals) {
@@ -307,6 +339,7 @@ const FBAnalyzer = (() => {
       scoreContent(profileData.content || {}),
       scoreInteraction(profileData.interaction || {}),
       scoreIdentity(profileData.identity || {}),
+      scoreEngagementRatio(profileData.engagementRatio || {}),
     ];
 
     let finalScore = computeDynamicScore(signals);
