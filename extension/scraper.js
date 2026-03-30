@@ -1,452 +1,616 @@
 /**
- * Facebook DOM Scraper — extracts profile signals from the current page.
- * Works on public profiles (no login) and full profiles (logged in).
- * Resilient to Facebook's obfuscated class names — uses semantic selectors,
- * aria labels, text content, and structural patterns.
+ * Facebook DOM Scraper v2 — extracts profile signals from the current page.
+ *
+ * Strategy: Facebook obfuscates CSS class names, so we NEVER rely on classes.
+ * Instead we use:
+ *   1. aria-label attributes (accessibility, fairly stable)
+ *   2. role attributes (semantic, stable)
+ *   3. Text content pattern matching (most reliable)
+ *   4. data-pagelet attributes (semi-stable)
+ *   5. Structural/positional heuristics
+ *   6. Full page text scan as fallback
  */
 
 /* exported FBScraper */
 const FBScraper = (() => {
   "use strict";
 
-  // ── Utility helpers ──────────────────────────────────────────────────
+  // ── Core helpers ─────────────────────────────────────────────────────
 
-  function qsa(sel, root = document) {
+  /** Query all matching elements. */
+  function $$(sel, root = document) {
     return Array.from(root.querySelectorAll(sel));
   }
 
-  function textIncludes(el, ...terms) {
-    const t = (el.textContent || "").toLowerCase();
-    return terms.some(term => t.includes(term.toLowerCase()));
+  /** Get ALL visible text spans on the page (cached per scan). */
+  let _spanCache = null;
+  function allSpans() {
+    if (!_spanCache) {
+      _spanCache = $$("span, a").map(el => ({
+        el,
+        text: (el.textContent || "").trim(),
+        lower: (el.textContent || "").trim().toLowerCase(),
+      })).filter(o => o.text.length > 0 && o.text.length < 500);
+    }
+    return _spanCache;
   }
 
-  function findByText(selector, ...terms) {
-    return qsa(selector).filter(el => textIncludes(el, ...terms));
+  /** Find spans whose text matches a pattern. */
+  function findSpans(regex) {
+    return allSpans().filter(o => regex.test(o.lower));
   }
 
+  /** Find spans that start with exact text. */
+  function findStartsWith(...prefixes) {
+    return allSpans().filter(o =>
+      prefixes.some(p => o.lower.startsWith(p.toLowerCase()))
+    );
+  }
+
+  /** Find spans containing exact substring. */
+  function findContains(...terms) {
+    return allSpans().filter(o =>
+      terms.some(t => o.lower.includes(t.toLowerCase()))
+    );
+  }
+
+  /** Extract a number from text like "1,234 friends" */
+  function extractNumber(text) {
+    const m = text.replace(/,/g, "").match(/(\d+)/);
+    return m ? parseInt(m[1]) : null;
+  }
+
+  /** Full page text (cached). */
+  let _pageText = null;
+  function pageText() {
+    if (!_pageText) _pageText = (document.body.innerText || "").toLowerCase();
+    return _pageText;
+  }
+
+  /** Get the profile name from <h1> or page title. */
   function getProfileName() {
-    // Try h1 first (profile pages), then page title
-    const h1 = document.querySelector("h1");
-    if (h1 && h1.textContent.trim()) return h1.textContent.trim();
-    const title = document.title.replace(/ \| Facebook$/, "").replace(/ - Facebook$/, "");
-    return title || "Unknown";
+    // Facebook profile pages have the name in an h1
+    const h1s = $$("h1");
+    for (const h of h1s) {
+      const t = h.textContent.trim();
+      // Skip h1s that are clearly not the name (too long, or generic)
+      if (t.length > 0 && t.length < 60 && !t.includes("Facebook")) return t;
+    }
+    return document.title.replace(/\s*[-|]\s*Facebook.*$/i, "").trim() || "Unknown";
   }
 
-  // ── Detection: are we on a profile page? ─────────────────────────────
+  // ── Profile page detection ───────────────────────────────────────────
 
   function isProfilePage() {
     const url = window.location.href;
-    // Profile URLs: /username, /profile.php?id=, /people/Name/id
+    const path = window.location.pathname;
+
+    // Explicit profile URLs
     if (url.includes("/profile.php")) return true;
     if (url.includes("/people/")) return true;
-    // Check for profile-specific elements
+
+    // Profile-specific DOM markers
     if (document.querySelector('[data-pagelet="ProfileActions"]')) return true;
-    if (document.querySelector('[aria-label="Profile picture"]')) return true;
-    // Generic: has an h1 and profile-like structure
-    const path = window.location.pathname;
-    if (path.split("/").filter(Boolean).length === 1 && !["watch", "groups", "events", "marketplace", "gaming", "search"].includes(path.split("/")[1])) return true;
+    if (document.querySelector('[data-pagelet="ProfileTilesFeed"]')) return true;
+    if (document.querySelector('[aria-label*="profile picture" i]')) return true;
+    if (document.querySelector('[aria-label*="Cover photo" i]')) return true;
+
+    // Check for "Add Friend" or "Message" or "Following" buttons (profile actions)
+    const profileActions = findContains("add friend", "message", "following", "follow");
+    const hasProfileButtons = profileActions.some(o => {
+      const tag = o.el.tagName.toLowerCase();
+      return tag === "span" && o.el.closest('[role="button"], button');
+    });
+    if (hasProfileButtons) return true;
+
+    // Single-segment path that's not a known non-profile route
+    const segments = path.split("/").filter(Boolean);
+    const nonProfileRoutes = [
+      "watch", "groups", "events", "marketplace", "gaming",
+      "search", "notifications", "messages", "settings",
+      "stories", "reels", "feeds", "bookmarks", "pages",
+    ];
+    if (segments.length === 1 && !nonProfileRoutes.includes(segments[0])) return true;
+
     return false;
   }
 
   // ── Signal 1: Profile Completeness ───────────────────────────────────
 
   function scrapeCompleteness() {
-    const data = {
-      hasProfilePhoto: false,
-      profilePhotoType: "unknown",
-      hasCoverPhoto: false,
-      hasBio: false,
-      bioIsGeneric: true,
-      hasWork: false,
-      workIsSpecific: false,
-      hasEducation: false,
-      educationIsSpecific: false,
-      hasRelationship: false,
-      hasHometown: false,
-      hasCurrentCity: false,
-      hasLifeEvents: false,
+    const d = {
+      hasProfilePhoto: false, profilePhotoType: "unknown",
+      hasCoverPhoto: false, hasBio: false, bioIsGeneric: true,
+      hasWork: false, workIsSpecific: false,
+      hasEducation: false, educationIsSpecific: false,
+      hasRelationship: false, hasHometown: false,
+      hasCurrentCity: false, hasLifeEvents: false,
     };
 
-    // Profile photo
-    const pfp = document.querySelector('[aria-label="Profile picture"] image, [data-pagelet="ProfileActions"] image, svg[aria-label] image');
-    if (pfp) {
-      data.hasProfilePhoto = true;
-      const src = pfp.getAttribute("xlink:href") || pfp.getAttribute("href") || "";
-      // Default/placeholder photos are typically very small or from static CDN paths
-      if (src.includes("default") || src.includes("silhouette")) data.profilePhotoType = "stock";
-      else data.profilePhotoType = "real";
+    // Profile photo — look for large circular image or aria-label
+    const pfpByAria = document.querySelector(
+      '[aria-label*="profile picture" i], [aria-label*="Profile photo" i]'
+    );
+    const svgImages = $$("svg image, image[href], image[xlink\\:href]");
+    const largeSvgImg = svgImages.find(img => {
+      const w = parseInt(img.getAttribute("width") || img.getAttribute("height") || "0");
+      return w >= 100;
+    });
+
+    if (pfpByAria || largeSvgImg) {
+      d.hasProfilePhoto = true;
+      d.profilePhotoType = "real";
     }
 
     // Cover photo
-    const cover = document.querySelector('[data-pagelet="ProfileCoverPhoto"] img, [aria-label="Cover photo"] img');
-    data.hasCoverPhoto = !!cover;
+    const coverByAria = document.querySelector(
+      '[aria-label*="cover photo" i], [aria-label*="Cover photo" i]'
+    );
+    const coverByPagelet = document.querySelector('[data-pagelet*="Cover" i]');
+    d.hasCoverPhoto = !!(coverByAria || (coverByPagelet && coverByPagelet.querySelector("img")));
 
-    // Intro / Bio section — look for the intro sidebar
-    const introSection = findByText("span, div", "intro");
-    const bioElements = qsa('[data-pagelet="ProfileTilesFeed_0"] span, [data-pagelet="ProfileTilesFeed"] span');
-    if (bioElements.length > 0) {
-      data.hasBio = true;
-      const bioText = bioElements.map(e => e.textContent).join(" ").toLowerCase();
-      const genericPhrases = ["living life", "just me", "it's complicated", "god is good", "blessed", "king", "queen"];
-      data.bioIsGeneric = genericPhrases.some(p => bioText.includes(p)) || bioText.length < 20;
+    // Work — "Works at X", "Worked at X"
+    const workSpans = findSpans(/works?\s+at\s/i);
+    if (workSpans.length > 0) {
+      d.hasWork = true;
+      const workText = workSpans[0].lower;
+      const vagueJobs = ["self-employed", "freelancer", "entrepreneur", "ceo", "boss", "own business"];
+      d.workIsSpecific = !vagueJobs.some(v => workText.includes(v));
     }
 
-    // Work, Education, Location — from intro/details section
-    const allText = document.body.textContent || "";
-    const introItems = qsa('[data-pagelet*="Profile"] li, [data-pagelet*="Tile"] li, [role="list"] li');
-
-    for (const item of introItems) {
-      const text = item.textContent.toLowerCase();
-      if (text.includes("works at") || text.includes("worked at")) {
-        data.hasWork = true;
-        data.workIsSpecific = !["self-employed", "freelancer", "entrepreneur", "ceo"].some(g => text.includes(g));
-      }
-      if (text.includes("studied at") || text.includes("goes to") || text.includes("went to")) {
-        data.hasEducation = true;
-        data.educationIsSpecific = !["school of hard knocks", "university of life", "school of life"].some(g => text.includes(g));
-      }
-      if (text.includes("lives in") || text.includes("currently in")) data.hasCurrentCity = true;
-      if (text.includes("from ")) data.hasHometown = true;
-      if (text.includes("married") || text.includes("in a relationship") || text.includes("single") || text.includes("engaged")) data.hasRelationship = true;
+    // Education — "Studied at X", "Went to X", "Goes to X"
+    const eduSpans = findSpans(/(?:studied|went|goes)\s+(?:at|to)\s/i);
+    if (eduSpans.length > 0) {
+      d.hasEducation = true;
+      const eduText = eduSpans[0].lower;
+      const vagueEdu = ["school of hard knocks", "university of life", "school of life", "life"];
+      d.educationIsSpecific = !vagueEdu.some(v => eduText.includes(v));
     }
 
-    // Also check visible spans for work/education
-    const spans = qsa("span");
-    for (const sp of spans) {
-      const t = sp.textContent.toLowerCase();
-      if (t.startsWith("works at ")) data.hasWork = true;
-      if (t.startsWith("studied at ") || t.startsWith("went to ")) data.hasEducation = true;
-      if (t.startsWith("lives in ")) data.hasCurrentCity = true;
-      if (t.startsWith("from ")) data.hasHometown = true;
+    // Current city — "Lives in X"
+    const livesIn = findSpans(/lives\s+in\s/i);
+    d.hasCurrentCity = livesIn.length > 0;
+
+    // Hometown — "From X"
+    const fromSpans = findStartsWith("from ");
+    // Filter out false positives (too long = probably not the intro item)
+    d.hasHometown = fromSpans.some(o => o.text.length < 50);
+
+    // Relationship — look for status keywords in intro area
+    const relKeywords = findContains("married", "in a relationship", "engaged", "single", "divorced", "widowed");
+    d.hasRelationship = relKeywords.some(o => o.text.length < 60);
+
+    // Bio / Intro text — look for quoted text or short descriptive spans near intro
+    const introLabel = findContains("intro");
+    if (introLabel.length > 0) {
+      d.hasBio = true;
+      // Check the nearby area for generic vs specific content
+      const pt = pageText();
+      const genericPhrases = ["living life", "just me", "blessed", "god is good",
+        "vibes only", "king", "queen", "no bio", "living my best"];
+      d.bioIsGeneric = genericPhrases.some(p => pt.includes(p));
     }
 
-    // Life events — look for any milestone indicators
-    const lifeEventIndicators = findByText("span", "life event", "joined facebook", "moved to", "got married");
-    data.hasLifeEvents = lifeEventIndicators.length > 0;
+    // Life events — "Joined Facebook", year milestones
+    const lifeEvents = findContains("joined facebook", "life event", "got married", "had a baby", "moved to");
+    d.hasLifeEvents = lifeEvents.length > 0;
 
-    return data;
+    return d;
   }
 
-  // ── Signal 2: Account Activity ───────────────────────────────────────
+  // ── Signal 2: Account Age / Activity ─────────────────────────────────
 
   function scrapeActivity() {
-    const data = {
-      accountAgeMonths: null,
-      totalPosts: null,
-      hadDormantPeriod: false,
-      activityRampGradual: true,
+    const d = {
+      accountAgeMonths: null, totalPosts: null,
+      hadDormantPeriod: false, activityRampGradual: true,
     };
 
-    // Look for "Joined" date
-    const joinedElements = findByText("span, div", "joined");
-    for (const el of joinedElements) {
-      const match = el.textContent.match(/joined\s+(?:in\s+)?(\w+)\s+(\d{4})/i);
-      if (match) {
-        const monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
-        const monthIdx = monthNames.indexOf(match[1].toLowerCase());
-        const year = parseInt(match[2]);
-        if (monthIdx >= 0 && year > 2000) {
-          const joined = new Date(year, monthIdx);
-          const now = new Date();
-          data.accountAgeMonths = Math.floor((now - joined) / (1000 * 60 * 60 * 24 * 30));
+    // "Joined [Month] [Year]" or "Joined in [Year]"
+    const joinedSpans = findSpans(/joined\s+(?:facebook\s+)?(?:in\s+)?(?:on\s+)?\w+\s+\d{4}/i);
+    for (const o of joinedSpans) {
+      const m = o.text.match(/(\w+)\s+(\d{4})/i);
+      if (m) {
+        const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"];
+        const mi = months.findIndex(mn => m[1].toLowerCase().startsWith(mn));
+        const yr = parseInt(m[2]);
+        if (mi >= 0 && yr > 2000 && yr <= new Date().getFullYear()) {
+          const joined = new Date(yr, mi);
+          d.accountAgeMonths = Math.max(0, Math.floor((Date.now() - joined) / (1000 * 60 * 60 * 24 * 30.44)));
+          break;
         }
       }
     }
 
-    // Count visible posts
-    const posts = qsa('[data-pagelet*="Feed"] [role="article"], [role="feed"] [role="article"]');
-    data.totalPosts = posts.length > 0 ? posts.length : null;
+    // Also try just finding a year near "Joined"
+    if (d.accountAgeMonths === null) {
+      const joinedSimple = findContains("joined");
+      for (const o of joinedSimple) {
+        const m = o.text.match(/(\d{4})/);
+        if (m) {
+          const yr = parseInt(m[1]);
+          if (yr > 2004 && yr <= new Date().getFullYear()) {
+            d.accountAgeMonths = (new Date().getFullYear() - yr) * 12;
+            break;
+          }
+        }
+      }
+    }
 
-    return data;
+    // Count visible posts / articles
+    const articles = $$('[role="article"]');
+    d.totalPosts = articles.length > 0 ? articles.length : null;
+
+    return d;
   }
 
   // ── Signal 3: Network ────────────────────────────────────────────────
 
   function scrapeNetwork() {
-    const data = {
-      friendCount: null,
-      mutualFriends: null,
-      friendsGenderSkewed: false,
-      friendsOppositeGender: false,
+    const d = {
+      friendCount: null, mutualFriends: null,
+      friendsGenderSkewed: false, friendsOppositeGender: false,
       friendsAppearFake: false,
     };
 
-    // Friend count — look for "X friends" text
-    const friendElements = findByText("a, span", "friends");
-    for (const el of friendElements) {
-      const match = el.textContent.match(/([\d,]+)\s*friends/i);
-      if (match) {
-        data.friendCount = parseInt(match[1].replace(/,/g, ""));
+    // "X friends" — look in tabs, headers, or any link/span
+    const friendSpans = findSpans(/[\d,]+\s*friends?\b/i);
+    for (const o of friendSpans) {
+      // Avoid "X mutual friends" for this field
+      if (o.lower.includes("mutual")) continue;
+      const n = extractNumber(o.text);
+      if (n !== null && n > 0) {
+        d.friendCount = n;
         break;
       }
     }
 
-    // Mutual friends
-    const mutualElements = findByText("a, span", "mutual friend");
-    for (const el of mutualElements) {
-      const match = el.textContent.match(/([\d,]+)\s*mutual/i);
-      if (match) {
-        data.mutualFriends = parseInt(match[1].replace(/,/g, ""));
+    // "X mutual friends"
+    const mutualSpans = findSpans(/[\d,]+\s*mutual\s*friends?/i);
+    for (const o of mutualSpans) {
+      const n = extractNumber(o.text);
+      if (n !== null) {
+        d.mutualFriends = n;
         break;
       }
     }
 
-    return data;
+    // Also check for "X followers" if no friends found (public figure)
+    if (d.friendCount === null) {
+      const followerSpans = findSpans(/[\d,]+[kKmM]?\s*followers?\b/i);
+      for (const o of followerSpans) {
+        let text = o.text.toLowerCase().replace(/,/g, "");
+        const mK = text.match(/([\d.]+)\s*k/);
+        const mM = text.match(/([\d.]+)\s*m/);
+        if (mM) { d.friendCount = Math.round(parseFloat(mM[1]) * 1000000); break; }
+        if (mK) { d.friendCount = Math.round(parseFloat(mK[1]) * 1000); break; }
+        const n = extractNumber(text);
+        if (n) { d.friendCount = n; break; }
+      }
+    }
+
+    return d;
   }
 
   // ── Signal 4: Post Timing ────────────────────────────────────────────
 
   function scrapePostTiming() {
-    const data = {
-      postsSpreadNaturally: true,
-      bulkPostsWithinHour: false,
-      bulkPatternRepeats: false,
-      consistentExactTimes: false,
-      silenceThenBurst: false,
-      timezoneMismatch: false,
+    const d = {
+      postsSpreadNaturally: true, bulkPostsWithinHour: false,
+      bulkPatternRepeats: false, consistentExactTimes: false,
+      silenceThenBurst: false, timezoneMismatch: false,
     };
 
-    // Collect post timestamps
+    // Collect timestamps from posts
+    // Facebook uses <a> elements with aria-label containing dates for post timestamps
     const timestamps = [];
-    const timeElements = qsa('[role="article"] a[href*="/posts/"] span, [role="article"] abbr, [role="article"] [data-utime]');
 
-    for (const el of timeElements) {
-      // Try to extract datetime from various FB timestamp formats
-      const utime = el.getAttribute("data-utime");
-      if (utime) {
-        timestamps.push(parseInt(utime) * 1000);
-        continue;
-      }
-      const title = el.getAttribute("title") || el.getAttribute("aria-label");
-      if (title) {
-        const d = new Date(title);
-        if (!isNaN(d.getTime())) timestamps.push(d.getTime());
+    // Method 1: aria-label on timestamp links (most reliable in modern FB)
+    const timeLinks = $$('a[href*="/posts/"], a[href*="/photos/"], a[href*="story_fbid"], a[aria-label]');
+    for (const link of timeLinks) {
+      const label = link.getAttribute("aria-label") || "";
+      // Patterns: "March 15, 2024 at 3:45 PM", "January 1, 2023", etc.
+      const dateMatch = label.match(
+        /(\w+\s+\d{1,2},?\s+\d{4}(?:\s+at\s+\d{1,2}:\d{2}\s*[AP]M)?)/i
+      );
+      if (dateMatch) {
+        const parsed = new Date(dateMatch[1].replace(" at ", " "));
+        if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 2004) {
+          timestamps.push(parsed.getTime());
+        }
       }
     }
 
-    if (timestamps.length >= 3) {
-      timestamps.sort((a, b) => a - b);
+    // Method 2: <abbr> with data-utime (old FB, still sometimes present)
+    for (const el of $$("abbr[data-utime]")) {
+      timestamps.push(parseInt(el.getAttribute("data-utime")) * 1000);
+    }
 
-      // Check for bulk posting (3+ posts within 1 hour)
-      for (let i = 0; i < timestamps.length - 2; i++) {
-        if (timestamps[i + 2] - timestamps[i] < 3600000) {
-          data.bulkPostsWithinHour = true;
-          data.postsSpreadNaturally = false;
+    // Method 3: Tooltip titles on timestamp elements
+    const titleEls = $$('[role="article"] a[title], [role="article"] span[title]');
+    for (const el of titleEls) {
+      const t = el.getAttribute("title") || "";
+      const parsed = new Date(t);
+      if (!isNaN(parsed.getTime()) && parsed.getFullYear() > 2004) {
+        timestamps.push(parsed.getTime());
+      }
+    }
+
+    // Method 4: Look for relative time patterns and approximate
+    if (timestamps.length < 3) {
+      const relTimeSpans = findSpans(/^\d+\s*[hdm]\s*$/i);  // "3h", "45m", "2d"
+      const now = Date.now();
+      for (const o of relTimeSpans) {
+        const hm = o.text.match(/(\d+)\s*h/i);
+        const dm = o.text.match(/(\d+)\s*d/i);
+        const mm = o.text.match(/(\d+)\s*m/i);
+        if (hm) timestamps.push(now - parseInt(hm[1]) * 3600000);
+        else if (dm) timestamps.push(now - parseInt(dm[1]) * 86400000);
+        else if (mm) timestamps.push(now - parseInt(mm[1]) * 60000);
+      }
+    }
+
+    // Analyze timestamp patterns
+    if (timestamps.length >= 3) {
+      const sorted = [...new Set(timestamps)].sort((a, b) => a - b);
+
+      // Bulk posting: 3+ within 1 hour
+      for (let i = 0; i <= sorted.length - 3; i++) {
+        if (sorted[i + 2] - sorted[i] < 3600000) {
+          d.bulkPostsWithinHour = true;
+          d.postsSpreadNaturally = false;
           break;
         }
       }
 
-      // Check for long gaps then bursts
-      const gaps = [];
-      for (let i = 1; i < timestamps.length; i++) {
-        gaps.push(timestamps[i] - timestamps[i - 1]);
-      }
-      const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-      const hasLongGap = gaps.some(g => g > avgGap * 5);
-      const hasShortBurst = gaps.some(g => g < avgGap * 0.1);
-      if (hasLongGap && hasShortBurst) {
-        data.silenceThenBurst = true;
-        data.postsSpreadNaturally = false;
+      // Silence then burst
+      if (sorted.length >= 4) {
+        const gaps = [];
+        for (let i = 1; i < sorted.length; i++) gaps.push(sorted[i] - sorted[i - 1]);
+        const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+        if (gaps.some(g => g > avgGap * 5) && gaps.some(g => g < avgGap * 0.1)) {
+          d.silenceThenBurst = true;
+          d.postsSpreadNaturally = false;
+        }
       }
 
-      // Check for consistent times (same hour of day)
-      const hours = timestamps.map(t => new Date(t).getHours());
-      const hourCounts = {};
-      hours.forEach(h => { hourCounts[h] = (hourCounts[h] || 0) + 1; });
-      const maxHourCount = Math.max(...Object.values(hourCounts));
-      if (maxHourCount >= hours.length * 0.7 && hours.length >= 5) {
-        data.consistentExactTimes = true;
-        data.postsSpreadNaturally = false;
+      // Consistent posting times (automation)
+      if (sorted.length >= 5) {
+        const hours = sorted.map(t => new Date(t).getHours());
+        const counts = {};
+        hours.forEach(h => { counts[h] = (counts[h] || 0) + 1; });
+        const maxCount = Math.max(...Object.values(counts));
+        if (maxCount >= hours.length * 0.7) {
+          d.consistentExactTimes = true;
+          d.postsSpreadNaturally = false;
+        }
       }
     }
 
-    return data;
+    return d;
   }
 
   // ── Signal 5: Engagement Gender ──────────────────────────────────────
 
   function scrapeEngagementGender() {
-    const data = {
+    const d = {
       pctSameGenderLikes: null,
       hasTaggedSameGender: false,
       personalSameGenderComments: false,
       thirstyComments: false,
     };
 
-    // Detect profile gender from pronouns or name patterns
-    // This is approximate — we check intro section for pronouns
-    const introText = (document.body.textContent || "").toLowerCase();
-    const isFemalePresenting = /\b(she\/her|mom|wife|girlfriend|actress|waitress|mrs)\b/.test(introText);
-    const isMalePresenting = /\b(he\/him|dad|husband|boyfriend|actor|mr\.)\b/.test(introText);
+    // Scan ALL text for thirsty comment patterns
+    const thirstyPhrases = [
+      "hi beautiful", "hello dear", "you are so pretty", "gorgeous queen",
+      "hi gorgeous", "hey beautiful", "nice pic dear", "so beautiful",
+      "marry me", "hello sweetie", "you're beautiful", "you're so pretty",
+      "beautiful lady", "pretty lady", "hello angel", "hi dear",
+      "beautiful woman", "can we be friends", "i want to know you",
+      "can i be your friend", "inbox me", "dm me dear",
+    ];
 
-    // Check comments for thirsty patterns
-    const comments = qsa('[role="article"] [dir="auto"]');
-    const thirstyPhrases = ["hi beautiful", "hello dear", "you are so pretty", "gorgeous", "hi gorgeous", "hey beautiful", "nice pic", "so beautiful", "marry me", "hello sweetie"];
+    const articles = $$('[role="article"]');
     let thirstyCount = 0;
+    let totalCommentLikeElements = 0;
 
-    for (const comment of comments) {
-      const text = comment.textContent.toLowerCase().trim();
-      if (thirstyPhrases.some(p => text.includes(p))) thirstyCount++;
+    for (const article of articles) {
+      const text = article.textContent.toLowerCase();
+      for (const phrase of thirstyPhrases) {
+        if (text.includes(phrase)) { thirstyCount++; break; }
+      }
+      totalCommentLikeElements++;
     }
 
-    data.thirstyComments = thirstyCount >= 3;
+    d.thirstyComments = thirstyCount >= 3 || (totalCommentLikeElements > 0 && thirstyCount / totalCommentLikeElements > 0.3);
 
-    return data;
+    // Check for tagged photos section ("Photos of [Name]")
+    const name = getProfileName().split(" ")[0].toLowerCase();
+    const taggedPhotos = findContains("photos of " + name, "tagged photos");
+    d.hasTaggedSameGender = taggedPhotos.length > 0;
+
+    return d;
   }
 
   // ── Signal 6: Photos ─────────────────────────────────────────────────
 
   function scrapePhotos() {
-    const data = {
-      photoQualityMixed: true,
-      hasCasualPhotos: true,
-      allProfessional: false,
-      suspectedAI: false,
-      showsProgression: true,
-      hasGroupTagged: false,
-      reverseSearchMatch: false,
-      onlySelfies: false,
+    const d = {
+      photoQualityMixed: true, hasCasualPhotos: true,
+      allProfessional: false, suspectedAI: false,
+      showsProgression: true, hasGroupTagged: false,
+      reverseSearchMatch: false, onlySelfies: false,
     };
 
-    // Check photo section
-    const photos = qsa('[data-pagelet*="Photo"] img, [data-pagelet*="photo"] img, a[href*="/photo"] img');
-    const photoCount = photos.length;
+    // Count all visible photos on page
+    const allImgs = $$("img").filter(img => {
+      const w = img.naturalWidth || parseInt(img.getAttribute("width") || "0");
+      const h = img.naturalHeight || parseInt(img.getAttribute("height") || "0");
+      return (w > 100 || h > 100); // Skip tiny icons
+    });
 
-    if (photoCount === 0) {
-      data.photoQualityMixed = false;
-      data.hasCasualPhotos = false;
+    if (allImgs.length < 3) {
+      d.photoQualityMixed = false;
+      d.hasCasualPhotos = false;
+      d.showsProgression = false;
     }
 
-    // Check for "Photos of [Name]" section (tagged by others)
-    const taggedSection = findByText("a, span", "photos of", "tagged photos");
-    data.hasGroupTagged = taggedSection.length > 0;
+    // "Photos of [Name]" or "Tagged Photos" section
+    const name = getProfileName().split(" ")[0].toLowerCase();
+    const tagged = findContains("photos of " + name, "tagged photos", "photos of you");
+    d.hasGroupTagged = tagged.length > 0;
 
-    // Check for "Albums" with various types
-    const albumElements = findByText("span, a", "mobile uploads", "timeline photos", "cover photos");
-    if (albumElements.length === 0 && photoCount > 0) {
-      // Only curated photos, no casual uploads
-      data.hasCasualPhotos = false;
+    // Look for album variety (mobile uploads = casual photos)
+    const albums = findContains("mobile uploads", "timeline photos", "cover photos", "profile pictures");
+    if (albums.length >= 2) {
+      d.hasCasualPhotos = true;
+      d.photoQualityMixed = true;
+    } else if (allImgs.length > 5 && albums.length === 0) {
+      d.hasCasualPhotos = false;
     }
 
-    return data;
+    // Check visible photos section link for count
+    const photoLink = findSpans(/\d+\s*photos?/i);
+    const photoCount = photoLink.length > 0 ? extractNumber(photoLink[0].text) : null;
+    if (photoCount !== null && photoCount > 20) {
+      d.showsProgression = true; // Many photos over time = progression
+    }
+
+    return d;
   }
 
   // ── Signal 7: Content ────────────────────────────────────────────────
 
   function scrapeContent() {
-    const data = {
-      hasOriginalPosts: false,
-      hasPersonalUpdates: false,
-      hasCheckIns: false,
-      hasBirthdayWishes: false,
-      hasLifeEvents: false,
-      mostlyMemes: false,
-      engagementBait: false,
-      languageMatchesLocation: true,
+    const d = {
+      hasOriginalPosts: false, hasPersonalUpdates: false,
+      hasCheckIns: false, hasBirthdayWishes: false,
+      hasLifeEvents: false, mostlyMemes: false,
+      engagementBait: false, languageMatchesLocation: true,
     };
 
-    const articles = qsa('[role="article"]');
-    let sharedCount = 0;
-    let originalCount = 0;
+    const articles = $$('[role="article"]');
+    let shared = 0, original = 0;
 
-    for (const article of articles) {
-      const text = article.textContent.toLowerCase();
+    for (const a of articles) {
+      const t = a.textContent.toLowerCase();
 
-      // Shared content detection
-      if (text.includes("shared a") || text.includes("shared an") || article.querySelector('[data-ad-preview]')) {
-        sharedCount++;
+      // Shared vs original
+      if (t.includes("shared a") || t.includes("shared an") || t.includes("shared a memory")) {
+        shared++;
       } else {
-        originalCount++;
+        original++;
       }
 
       // Check-ins
-      if (text.includes("was at") || text.includes("is at") || text.includes("checked in")) {
-        data.hasCheckIns = true;
+      if (t.includes("was at ") || t.includes(" is at ") || t.includes("checked in") || t.includes("is in ")) {
+        d.hasCheckIns = true;
       }
 
       // Personal updates
-      if (text.includes("feeling") || text.includes("i'm") || text.includes("my ") || text.includes("today i")) {
-        data.hasPersonalUpdates = true;
+      if (/\b(feeling|i'm |i am |my |today i|so happy|so sad|excited|grateful)\b/.test(t)) {
+        d.hasPersonalUpdates = true;
       }
     }
 
-    data.hasOriginalPosts = originalCount > 2;
-    data.mostlyMemes = articles.length > 0 && sharedCount > articles.length * 0.7;
+    d.hasOriginalPosts = original >= 2;
+    d.mostlyMemes = articles.length >= 3 && shared / articles.length > 0.7;
 
-    // Birthday wishes
-    const birthdayElements = findByText("span, div", "happy birthday", "hbd", "bday");
-    data.hasBirthdayWishes = birthdayElements.length >= 2;
+    // Birthday wishes anywhere on the page
+    const bday = findContains("happy birthday", "happy bday", "hbd ");
+    d.hasBirthdayWishes = bday.length >= 2;
 
-    return data;
+    // Life events
+    const events = findContains("life event", "got married", "had a baby", "started a new job", "moved to");
+    d.hasLifeEvents = events.length > 0;
+
+    // Engagement bait detection
+    const bait = findContains("share if you agree", "like if you", "type amen", "1 like = 1", "share this");
+    d.engagementBait = bait.length >= 2;
+
+    return d;
   }
 
   // ── Signal 8: Interaction ────────────────────────────────────────────
 
   function scrapeInteraction() {
-    const data = {
-      twoWayConversations: false,
-      taggedByOthers: false,
-      sendsStrangerRequests: false,
-      oneDirectional: false,
-      manyGroups: false,
-      dmPivot: false,
-      relationshipSeeking: false,
+    const d = {
+      twoWayConversations: false, taggedByOthers: false,
+      sendsStrangerRequests: false, oneDirectional: false,
+      manyGroups: false, dmPivot: false, relationshipSeeking: false,
     };
 
-    // Two-way conversations — check if post comments have replies
-    const commentThreads = qsa('[role="article"] [role="article"]');
-    data.twoWayConversations = commentThreads.length >= 2;
+    // Nested articles = comment replies = two-way conversations
+    const nestedArticles = $$('[role="article"] [role="article"]');
+    d.twoWayConversations = nestedArticles.length >= 2;
 
-    // Tagged by others — reuse from photos
-    const taggedElements = findByText("a, span", "tagged", "was with", "with ");
-    data.taggedByOthers = taggedElements.length >= 2;
+    // Tagged by others
+    const name = getProfileName().split(" ")[0].toLowerCase();
+    const tagged = findContains("was with " + name, "tagged " + name, "— with " + name);
+    // Also check for generic "with" patterns
+    const withPatterns = findContains("was with", "is with", "— with");
+    d.taggedByOthers = tagged.length > 0 || withPatterns.length >= 3;
 
     // Relationship seeking
-    const allText = document.body.textContent.toLowerCase();
-    if (allText.includes("looking for") && (allText.includes("relationship") || allText.includes("partner") || allText.includes("soulmate"))) {
-      data.relationshipSeeking = true;
+    const pt = pageText();
+    if (/looking for\s+(a\s+)?(serious\s+)?relationship/i.test(pt) ||
+        /seeking\s+(a\s+)?(life\s+)?partner/i.test(pt) ||
+        /looking for\s+(my\s+)?soulmate/i.test(pt)) {
+      d.relationshipSeeking = true;
     }
 
-    return data;
+    // DM pivot
+    if (/\b(inbox me|dm me|whatsapp me|text me|call me)\b/i.test(pt)) {
+      d.dmPivot = true;
+    }
+
+    return d;
   }
 
   // ── Signal 9: Identity ───────────────────────────────────────────────
 
   function scrapeIdentity() {
-    const data = {
-      nameMatchesEthnicity: true, // Default positive — hard to auto-detect
-      randomNumbers: false,
-      unusualFormatting: false,
-      multipleNameChanges: false,
-      identityConsistent: true,
+    const d = {
+      nameMatchesEthnicity: true,
+      randomNumbers: false, unusualFormatting: false,
+      multipleNameChanges: false, identityConsistent: true,
       hasVanityUrl: true,
     };
 
     const name = getProfileName();
 
     // Random numbers in name
-    data.randomNumbers = /\d{2,}/.test(name);
+    d.randomNumbers = /\d{2,}/.test(name);
 
-    // Unusual formatting
-    data.unusualFormatting = name === name.toUpperCase() || /[!@#$%^&*]{2,}/.test(name) || /\.{3,}/.test(name);
+    // Unusual formatting: ALL CAPS (but not short names), excessive symbols
+    d.unusualFormatting =
+      (name.length > 4 && name === name.toUpperCase()) ||
+      /[!@#$%^&*]{2,}/.test(name) ||
+      /\.{3,}/.test(name) ||
+      /_{2,}/.test(name) ||
+      /\bx{3,}\b/i.test(name);
 
-    // Vanity URL check
+    // Vanity URL vs numeric ID
     const url = window.location.href;
-    data.hasVanityUrl = !url.includes("profile.php?id=") && !/\/\d{10,}/.test(url);
+    d.hasVanityUrl = !url.includes("profile.php?id=") && !/\/\d{10,}/.test(url);
 
     // Former name / name changes
-    const formerName = findByText("span", "former name", "previously known");
-    data.multipleNameChanges = formerName.length > 0;
+    const former = findContains("former name", "previously known as", "also known as");
+    d.multipleNameChanges = former.length > 0;
 
-    return data;
+    return d;
   }
 
-  // ── Master scrape function ───────────────────────────────────────────
+  // ── Master scrape ────────────────────────────────────────────────────
 
   function scrapeProfile() {
+    // Reset caches
+    _spanCache = null;
+    _pageText = null;
+
     if (!isProfilePage()) return null;
 
-    return {
+    const data = {
       profileName: getProfileName(),
       completeness: scrapeCompleteness(),
       activity: scrapeActivity(),
@@ -458,6 +622,22 @@ const FBScraper = (() => {
       interaction: scrapeInteraction(),
       identity: scrapeIdentity(),
     };
+
+    // Debug: log what we scraped so user can verify in console
+    console.group("[FB Analyzer] Scraped profile data");
+    console.log("Name:", data.profileName);
+    console.log("Completeness:", data.completeness);
+    console.log("Activity:", data.activity);
+    console.log("Network:", data.network);
+    console.log("Post Timing:", data.postTiming);
+    console.log("Engagement:", data.engagementGender);
+    console.log("Photos:", data.photos);
+    console.log("Content:", data.content);
+    console.log("Interaction:", data.interaction);
+    console.log("Identity:", data.identity);
+    console.groupEnd();
+
+    return data;
   }
 
   return { scrapeProfile, isProfilePage };
