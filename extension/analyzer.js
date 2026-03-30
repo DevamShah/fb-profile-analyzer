@@ -130,24 +130,39 @@ const FBAnalyzer = (() => {
   function scoreEngagementGender(d, raw) {
     let s = 70;
     const obs = [];
-    let weight = 0.05; // Default low weight when no data
+    let weight = 0.05;
 
     if (d.pctSameGenderLikes != null) {
       const eg = raw?.engagementGender;
       const knownCount = eg ? (eg.female + eg.male) : 0;
       const unknownPct = eg ? eg.unknown / eg.total : 0;
 
-      if (knownCount < 10 || unknownPct > 0.3) {
+      // Lower threshold: 5+ known names is enough for a read
+      if (knownCount < 5) {
         s = 65;
         weight = 0.05;
-        obs.push(`Gender data from small sample (${knownCount} known) — low confidence`);
+        obs.push(`Too few gendered names (${knownCount}) — not enough data`);
       } else {
-        weight = 0.15;
         const pct = d.pctSameGenderLikes;
-        if (pct >= 0.35) { s = 85; obs.push(`${Math.round(pct * 100)}% same-gender engagement (n=${knownCount})`); }
-        else if (pct >= 0.20) { s = 60; obs.push(`Skewed: ${Math.round(pct * 100)}% same-gender (n=${knownCount})`); }
-        else if (pct >= 0.08) { s = 25; obs.push(`Heavily opposite-gender: ${Math.round(pct * 100)}% same-gender (n=${knownCount})`); }
-        else { s = 5; obs.push(`Almost zero same-gender engagement — classic catfish (n=${knownCount})`); }
+        const confidence = unknownPct < 0.3 ? "high" : "moderate";
+
+        if (pct >= 0.35) {
+          s = 85;
+          weight = 0.12;
+          obs.push(`${Math.round(pct * 100)}% same-gender engagement (n=${knownCount}, ${confidence})`);
+        } else if (pct >= 0.20) {
+          s = 55;
+          weight = 0.15;
+          obs.push(`Skewed: only ${Math.round(pct * 100)}% same-gender (n=${knownCount})`);
+        } else if (pct >= 0.08) {
+          s = 20;
+          weight = 0.22;
+          obs.push(`Heavily opposite-gender: ${Math.round(pct * 100)}% same-gender (n=${knownCount}) — catfish signal`);
+        } else {
+          s = 5;
+          weight = 0.25;
+          obs.push(`Almost zero same-gender engagement (${Math.round(pct * 100)}%) — classic catfish pattern`);
+        }
       }
     }
 

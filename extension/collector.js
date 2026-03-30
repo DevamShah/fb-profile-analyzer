@@ -215,7 +215,7 @@ const FBCollector = (() => {
     await sleep(500);
 
     onProgress("Scrolling through posts...", 35);
-    await scrollDown(8, 1200);
+    await scrollDown(12, 1000);
 
     onProgress("Analyzing post content...", 50);
     const pt = pageText();
@@ -270,17 +270,47 @@ const FBCollector = (() => {
       engagementNames.push(...names);
     }
 
-    // Method 3: Comment author names
-    const commentAuthors = $$('[role="article"] a[role="link"]');
+    // Method 3: Comment author names — ALL links that look like profile links
+    const commentAuthors = $$('a[role="link"], a[href*="facebook.com/"]');
     for (const a of commentAuthors) {
       const href = a.getAttribute("href") || "";
-      if (href.includes("facebook.com/") && !href.includes("/posts/") && !href.includes("/photos/")) {
+      if (href.includes("facebook.com/") &&
+          !href.includes("/posts/") && !href.includes("/photos/") &&
+          !href.includes("/videos/") && !href.includes("/reels/") &&
+          !href.includes("/groups/") && !href.includes("/events/") &&
+          !href.includes("/hashtag/")) {
         const name = a.textContent.trim();
-        if (name.length > 1 && name.length < 40 && !name.includes("·") && !/^\d/.test(name)) {
+        if (name.length > 2 && name.length < 40 &&
+            !name.includes("·") && !name.includes("Comment") &&
+            !name.includes("Like") && !name.includes("Share") &&
+            !name.includes("Reply") && !/^\d/.test(name) &&
+            name.split(/\s+/).length >= 2) {
           engagementNames.push(name);
         }
       }
     }
+
+    // Method 4: Names from "liked by" / reaction popups / tooltips
+    const tooltipNames = $$('[role="tooltip"] a, [data-hover] a');
+    for (const a of tooltipNames) {
+      const name = a.textContent.trim();
+      if (name.length > 2 && name.length < 40 && name.split(/\s+/).length >= 2) {
+        engagementNames.push(name);
+      }
+    }
+
+    // Method 5: ALL visible person-name-looking spans near posts
+    // (Facebook shows reactor names inline like "Ahmed Ali, Priya and 12 others")
+    const namePatterns = findSpans(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+    for (const o of namePatterns) {
+      // Only if it's a link (person names on FB are always links)
+      if (o.el.tagName === "A" || o.el.closest("a")) {
+        engagementNames.push(o.text);
+      }
+    }
+
+    // Deduplicate
+    const uniqueNames = [...new Set(engagementNames)];
 
     // Thirsty comments
     const thirstyPhrases = [
@@ -306,7 +336,7 @@ const FBCollector = (() => {
       engagementBait: /\b(share if you|type amen|1 like =|like and share)\b/i.test(pt),
       mostlyMemes: totalPosts >= 3 && sharedCount / totalPosts > 0.7,
       thirstyCount,
-      engagementNames,
+      engagementNames: uniqueNames,
       hasCommentThreads: findSpans(/\d+\s*comments?/i).length >= 2 || findContains("reply","replies").length >= 1,
       taggedByOthers: /\b(was with|— with|is with|tagged)\b/i.test(pt),
       // ── Like counts per post (for engagement ratio) ──
