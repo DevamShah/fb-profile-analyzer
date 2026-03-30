@@ -34,29 +34,41 @@ const FBCollector = (() => {
   }
 
   async function clickTab(tabText) {
-    const links = $$("a");
-    for (const link of links) {
+    const target = tabText.toLowerCase();
+
+    // Strategy 1: Exact text match on tab-like links
+    for (const link of $$("a")) {
       const text = link.textContent.trim().toLowerCase();
-      const href = (link.getAttribute("href") || "").toLowerCase();
-      if (text === tabText.toLowerCase() &&
-          (href.includes("about") || href.includes("friends") ||
-           href.includes("photos") || href.includes("sk=") ||
-           href.includes("facebook.com") ||
-           link.closest('[role="tablist"]') || link.closest("nav"))) {
+      if (text === target) {
         link.click();
         await sleep(2500);
         return true;
       }
     }
-    // Fallback: partial match
-    for (const link of links) {
+
+    // Strategy 2: href contains the tab name
+    for (const link of $$("a")) {
       const href = (link.getAttribute("href") || "").toLowerCase();
-      if (href.includes("/" + tabText.toLowerCase()) || href.includes("sk=" + tabText.toLowerCase())) {
-        link.click();
+      if (href.includes("sk=" + target) || href.includes("/" + target)) {
+        const text = link.textContent.trim();
+        if (text.length < 30) { // Skip long links that happen to match
+          link.click();
+          await sleep(2500);
+          return true;
+        }
+      }
+    }
+
+    // Strategy 3: aria-label or role="tab"
+    for (const tab of $$('[role="tab"], [aria-selected]')) {
+      if (tab.textContent.trim().toLowerCase() === target) {
+        tab.click();
         await sleep(2500);
         return true;
       }
     }
+
+    console.log("[FBA] Tab not found:", tabText);
     return false;
   }
 
@@ -98,17 +110,22 @@ const FBCollector = (() => {
     return "Unknown";
   }
 
-  // ── Phase 1: Header ──────────────────────────────────────────────────
+  // ── Phase 1: Header + Network (ALWAYS visible, scrape BEFORE tabs) ──
 
   function scrapeHeader() {
-    const d = { hasProfilePhoto: false, profilePhotoType: "unknown", hasCoverPhoto: false };
+    const d = {
+      hasProfilePhoto: false, profilePhotoType: "unknown", hasCoverPhoto: false,
+      friendCount: null, mutualFriends: null,
+    };
 
+    // Profile photo
     const pfp = document.querySelector('[aria-label*="profile picture" i], [aria-label*="profile photo" i]');
     const svgImgs = $$("svg image, image[href], image[xlink\\:href]").filter(img =>
       parseInt(img.getAttribute("width") || img.getAttribute("height") || "0") >= 80
     );
     if (pfp || svgImgs.length > 0) { d.hasProfilePhoto = true; d.profilePhotoType = "real"; }
 
+    // Cover photo
     const coverAria = document.querySelector('[aria-label*="cover photo" i]');
     const coverPagelet = document.querySelector('[data-pagelet*="Cover" i]');
     const topImgs = $$("img").filter(img => {
@@ -117,6 +134,29 @@ const FBCollector = (() => {
     });
     d.hasCoverPhoto = !!(coverAria || (coverPagelet && coverPagelet.querySelector("img, svg")) || topImgs.length > 0);
 
+    // Network counts — capture from header NOW before navigating
+    // "2K friends", "3.8K followers", "117 mutual friends"
+    const spans = allSpans();
+    for (const o of spans) {
+      if (d.friendCount === null && !o.lower.includes("mutual")) {
+        const fm = o.text.match(/([\d,.]+)\s*[kK]\s*friends/);
+        if (fm) { d.friendCount = Math.round(parseFloat(fm[1].replace(/,/g, "")) * 1000); continue; }
+        const fn = o.text.match(/([\d,]+)\s*friends/);
+        if (fn) { d.friendCount = parseInt(fn[1].replace(/,/g, "")); continue; }
+      }
+      if (d.friendCount === null) {
+        const flK = o.text.match(/([\d,.]+)\s*[kK]\s*followers/);
+        if (flK) { d.friendCount = Math.round(parseFloat(flK[1].replace(/,/g, "")) * 1000); continue; }
+        const fln = o.text.match(/([\d,]+)\s*followers/);
+        if (fln) { d.friendCount = parseInt(fln[1].replace(/,/g, "")); continue; }
+      }
+      if (d.mutualFriends === null) {
+        const mm = o.text.match(/([\d,]+)\s*mutual/);
+        if (mm) { d.mutualFriends = parseInt(mm[1].replace(/,/g, "")); }
+      }
+    }
+
+    console.log("[FBA] Header scraped: friendCount=", d.friendCount, "mutualFriends=", d.mutualFriends);
     return d;
   }
 
@@ -530,15 +570,24 @@ const FBCollector = (() => {
 
     onProgress("Starting deep scan...", 0);
 
+    // Phase 1: Header (includes network data — captured BEFORE any navigation)
     const header = scrapeHeader();
+
+    // Phase 2: About tab
     const about = await scrapeAbout(onProgress);
+
+    // Phase 3: Posts (navigate back first)
     const posts = await scrapePosts(onProgress);
+
+    // Phase 4: Friends tab (supplements header data)
     const friends = await scrapeFriends(onProgress);
+
+    // Phase 5: Identity
     const identity = scrapeIdentity();
 
-    // Navigate back to main profile
+    // Navigate back
     onProgress("Computing verdict...", 90);
-    await clickTab("all");
+    await clickTab("all").catch(() => {});
     scrollToTop();
 
     // ── Gender analysis on engagement + friends ──
@@ -590,8 +639,8 @@ const FBCollector = (() => {
         activityRampGradual: true,
       },
       network: {
-        friendCount: friends.friendCount,
-        mutualFriends: friends.mutualFriends,
+        friendCount: header.friendCount || friends.friendCount,
+        mutualFriends: header.mutualFriends || friends.mutualFriends,
         friendsGenderSkewed,
         friendsOppositeGender,
         friendsAppearFake: false,
@@ -634,7 +683,7 @@ const FBCollector = (() => {
       },
       identity,
       // ── Engagement ratio (likes vs friend count) — KILLER signal ──
-      engagementRatio: computeEngagementRatio(posts.likeCounts, friends.friendCount),
+      engagementRatio: computeEngagementRatio(posts.likeCounts, header.friendCount || friends.friendCount),
 
       // Raw data for dynamic scoring
       _raw: {
