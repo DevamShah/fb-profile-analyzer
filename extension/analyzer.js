@@ -24,33 +24,34 @@ const FBAnalyzer = (() => {
   // ── Signal scorers (dynamic) ─────────────────────────────────────────
 
   function scoreCompleteness(d) {
-    let s = 0;
+    // Simple: count how many KEY fields are present. 4+ = complete profile.
     const obs = [];
-    const fields = [
-      [d.hasProfilePhoto && d.profilePhotoType === "real", 15, "Real profile photo"],
-      [d.hasCoverPhoto, 10, "Cover photo present"],
-      [d.hasBio && !d.bioIsGeneric, 15, "Specific bio/description"],
-      [d.hasBio && d.bioIsGeneric, 7, null],
-      [d.hasWork && d.workIsSpecific, 15, "Specific work history"],
-      [d.hasWork && !d.workIsSpecific, 7, null],
-      [d.hasEducation && d.educationIsSpecific, 12, "Specific education"],
-      [d.hasEducation && !d.educationIsSpecific, 6, null],
-      [d.hasRelationship, 5, null],
-      [d.hasCurrentCity, 8, null],
-      [d.hasHometown, 8, null],
-      [d.hasLifeEvents, 12, null],
-    ];
+    let filled = 0;
 
-    let earned = 0;
-    for (const [cond, pts, ob] of fields) {
-      if (cond) { earned += pts; if (ob) obs.push(ob); }
-    }
-    s = Math.min(100, earned);
+    if (d.hasProfilePhoto) filled++;
+    if (d.hasCoverPhoto) filled++;
+    if (d.hasBio) filled++;
+    if (d.hasWork) filled++;
+    if (d.hasEducation) filled++;
+    if (d.hasCurrentCity || d.hasHometown) filled++;
+    if (d.hasRelationship) filled++;
+    if (d.hasLifeEvents) filled++;
 
-    if (s >= 80) obs.unshift("Profile is well-filled with specific details");
-    else if (s < 30) obs.push("Profile is mostly empty");
+    // Score: 0-1 fields = 20, 2 = 40, 3 = 55, 4 = 70, 5 = 80, 6 = 90, 7+ = 95
+    let s;
+    if (filled >= 7) { s = 95; obs.push("Profile is well-filled with specific details"); }
+    else if (filled >= 6) { s = 90; obs.push("Profile is well-filled with specific details"); }
+    else if (filled >= 5) { s = 80; obs.push("Profile has good detail coverage"); }
+    else if (filled >= 4) { s = 70; obs.push("Profile has reasonable details"); }
+    else if (filled >= 3) { s = 55; obs.push("Profile has some details but gaps"); }
+    else if (filled >= 2) { s = 40; obs.push("Profile is thin on details"); }
+    else { s = 20; obs.push("Profile is mostly empty"); }
 
-    return { name: "Profile Completeness", num: 1, weight: 0.10, score: clamp(s), flag: flag(s), obs };
+    // Bonus: specific (not generic) bio/work
+    if (d.hasBio && !d.bioIsGeneric) s = Math.min(100, s + 5);
+    if (d.hasWork && d.workIsSpecific) s = Math.min(100, s + 5);
+
+    return { name: "Profile Completeness", num: 1, weight: 0.10, score: clamp(s), flag: flag(clamp(s)), obs };
   }
 
   function scoreActivity(d) {
@@ -137,27 +138,39 @@ const FBAnalyzer = (() => {
     return { name: "Post Timing", num: 4, weight: 0.10, score: clamp(s), flag: flag(clamp(s)), obs };
   }
 
-  function scoreEngagementGender(d) {
-    // This is THE catfish detector — weight dynamically based on data
-    let s = 70; // Neutral when no data
+  function scoreEngagementGender(d, raw) {
+    let s = 70;
     const obs = [];
     let hasData = false;
 
     if (d.pctSameGenderLikes != null) {
       hasData = true;
-      const pct = d.pctSameGenderLikes;
-      if (pct >= 0.35) { s = 85; obs.push(`Healthy same-gender engagement (${Math.round(pct * 100)}%)`); }
-      else if (pct >= 0.20) { s = 65; obs.push(`Slightly skewed engagement (${Math.round(pct * 100)}% same-gender)`); }
-      else if (pct >= 0.08) { s = 35; obs.push(`Heavily opposite-gender engagement (${Math.round(pct * 100)}% same-gender)`); }
-      else { s = 10; obs.push(`Almost zero same-gender engagement (${Math.round(pct * 100)}%) — classic catfish pattern`); }
+
+      // Check sample quality — if too many unknowns, reduce confidence
+      const eg = raw?.engagementGender;
+      const sampleSize = eg?.total || 0;
+      const unknownPct = eg ? eg.unknown / eg.total : 0;
+      const knownCount = eg ? (eg.female + eg.male) : 0;
+
+      if (knownCount < 10 || unknownPct > 0.3) {
+        // Small or unreliable sample — reduce to moderate confidence
+        s = 65;
+        obs.push(`Gender data from small sample (${knownCount} known of ${sampleSize}) — low confidence`);
+        hasData = false; // Don't give this high weight
+      } else {
+        const pct = d.pctSameGenderLikes;
+        if (pct >= 0.35) { s = 85; obs.push(`Healthy same-gender engagement (${Math.round(pct * 100)}%, n=${knownCount})`); }
+        else if (pct >= 0.20) { s = 65; obs.push(`Slightly skewed (${Math.round(pct * 100)}% same-gender, n=${knownCount})`); }
+        else if (pct >= 0.08) { s = 30; obs.push(`Heavily opposite-gender (${Math.round(pct * 100)}% same-gender, n=${knownCount})`); }
+        else { s = 10; obs.push(`Almost zero same-gender engagement (${Math.round(pct * 100)}%) — catfish pattern`); }
+      }
     }
 
     if (d.hasTaggedSameGender) { s += 10; obs.push("Tagged with same-gender friends"); }
     if (d.personalSameGenderComments) { s += 10; obs.push("Personal comments from same-gender friends"); }
     if (d.thirstyComments) { s -= 20; obs.push("Generic thirsty comments detected"); }
 
-    // Dynamic weight: if we have gender data, this signal matters A LOT
-    const weight = hasData ? 0.20 : 0.05;
+    const weight = hasData ? 0.18 : 0.05;
 
     if (!obs.length) obs.push("Engagement gender data not available — scored neutral");
     return { name: "Engagement Gender", num: 5, weight, score: clamp(s), flag: flag(clamp(s)), obs, hasData };
@@ -276,6 +289,54 @@ const FBAnalyzer = (() => {
     return 0;
   }
 
+  // ── Catfish combo penalty ──────────────────────────────────────────────
+  // Combines weak signals that individually aren't conclusive but together scream fake
+
+  function catfishComboPenalty(profileData) {
+    let redFlags = 0;
+    const flags = [];
+
+    // Random numbers in username
+    if (profileData.identity?.randomNumbers) { redFlags++; flags.push("Auto-generated username"); }
+
+    // No vanity URL
+    if (profileData.identity && !profileData.identity.hasVanityUrl) { redFlags++; }
+
+    // "Single" status (catfish bait)
+    if (profileData.completeness?.hasRelationship) {
+      // Having relationship status isn't bad, but "Single" specifically is a catfish signal
+      // We detect this in the collector
+    }
+
+    // Low profile completeness (< 60) despite having photos
+    if (!profileData.completeness?.hasEducation && !profileData.completeness?.hasWork) {
+      redFlags++; flags.push("Missing work AND education");
+    }
+
+    // Engagement ratio suspicious
+    if (profileData.engagementRatio?.verdict === "suspicious") {
+      redFlags += 2; flags.push("Very low engagement vs friend count");
+    } else if (profileData.engagementRatio?.verdict === "low") {
+      redFlags++; flags.push("Low engagement vs friend count");
+    }
+
+    // Spelling errors in education (common fake signal)
+    const edu = (profileData._raw?.educationText || "").toLowerCase();
+    const spellingErrors = ["collage", "univercity", "univeristy", "engeneering", "managment"];
+    if (spellingErrors.some(e => edu.includes(e))) {
+      redFlags++; flags.push("Spelling errors in education");
+    }
+
+    // Calculate penalty: each red flag compounds
+    // 0-1 flags = no penalty, 2 = -3, 3 = -8, 4+ = -15
+    let penalty = 0;
+    if (redFlags >= 4) penalty = -15;
+    else if (redFlags >= 3) penalty = -8;
+    else if (redFlags >= 2) penalty = -3;
+
+    return { penalty, redFlags, flags };
+  }
+
   // ── Verdict ──────────────────────────────────────────────────────────
 
   function classifyVerdict(score) {
@@ -334,7 +395,7 @@ const FBAnalyzer = (() => {
       scoreActivity(profileData.activity || {}),
       scoreNetwork(profileData.network || {}),
       scorePostTiming(profileData.postTiming || {}),
-      scoreEngagementGender(profileData.engagementGender || {}),
+      scoreEngagementGender(profileData.engagementGender || {}, profileData._raw || {}),
       scorePhotos(profileData.photos || {}),
       scoreContent(profileData.content || {}),
       scoreInteraction(profileData.interaction || {}),
@@ -346,8 +407,16 @@ const FBAnalyzer = (() => {
 
     // Apply friend count boost
     const fc = profileData.network?.friendCount;
-    finalScore = Math.round((finalScore + friendCountBoost(fc)) * 10) / 10;
-    finalScore = Math.max(0, Math.min(100, finalScore));
+    finalScore += friendCountBoost(fc);
+
+    // Apply catfish combo penalty
+    const combo = catfishComboPenalty(profileData);
+    finalScore += combo.penalty;
+    if (combo.flags.length > 0) {
+      console.log("[FBA] Catfish combo flags:", combo.flags, "penalty:", combo.penalty);
+    }
+
+    finalScore = Math.round(Math.max(0, Math.min(100, finalScore)) * 10) / 10;
 
     const catfish = checkCatfishCombo(signals);
 
