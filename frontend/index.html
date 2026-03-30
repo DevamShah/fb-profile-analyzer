@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FB Profile Authenticity Analyzer</title>
+    <style>
+        :root {
+            --navy: #0a1628;
+            --navy-light: #132042;
+            --navy-mid: #1a2d5a;
+            --accent: #4f8ef7;
+            --accent-dim: #3a6bc5;
+            --green: #34d399;
+            --yellow: #fbbf24;
+            --orange: #f97316;
+            --red: #ef4444;
+            --text: #e2e8f0;
+            --text-dim: #94a3b8;
+            --border: #1e3a6e;
+            --radius: 12px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--navy);
+            color: var(--text);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+        }
+
+        .subtitle { color: var(--text-dim); margin-bottom: 2rem; font-size: 0.95rem; }
+
+        /* ── Tabs ── */
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 1.5rem;
+        }
+        .tab {
+            padding: 0.75rem 1.25rem;
+            cursor: pointer;
+            color: var(--text-dim);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+            font-size: 0.9rem;
+            background: none;
+            border-top: none; border-left: none; border-right: none;
+        }
+        .tab:hover { color: var(--text); }
+        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* ── Form ── */
+        .signal-section {
+            background: var(--navy-light);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .signal-section h3 {
+            font-size: 1rem;
+            margin-bottom: 0.75rem;
+            color: var(--accent);
+        }
+        .signal-section .weight { color: var(--text-dim); font-size: 0.8rem; }
+
+        .field {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .field:last-child { border-bottom: none; }
+        .field label { font-size: 0.88rem; flex: 1; }
+
+        .field input[type="number"] {
+            width: 100px;
+            background: var(--navy);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.4rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+        }
+        .field input[type="range"] { width: 120px; accent-color: var(--accent); }
+
+        .toggle {
+            position: relative;
+            width: 44px; height: 24px;
+            cursor: pointer;
+        }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle .slider {
+            position: absolute; inset: 0;
+            background: var(--navy);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            transition: 0.2s;
+        }
+        .toggle .slider::before {
+            content: '';
+            position: absolute;
+            width: 18px; height: 18px;
+            left: 2px; bottom: 2px;
+            background: var(--text-dim);
+            border-radius: 50%;
+            transition: 0.2s;
+        }
+        .toggle input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+        .toggle input:checked + .slider::before { transform: translateX(20px); background: white; }
+
+        select {
+            background: var(--navy);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.4rem 0.6rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+        }
+
+        /* ── Buttons ── */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 2rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+        .btn-primary:hover { background: var(--accent-dim); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-bar { display: flex; gap: 1rem; margin-top: 1.5rem; }
+
+        /* ── Results ── */
+        .result-card {
+            background: var(--navy-light);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .verdict-banner {
+            text-align: center;
+            padding: 2rem;
+            border-radius: var(--radius);
+            margin-bottom: 1.5rem;
+        }
+        .verdict-banner.green { background: rgba(52,211,153,0.1); border: 1px solid rgba(52,211,153,0.3); }
+        .verdict-banner.light-green { background: rgba(52,211,153,0.06); border: 1px solid rgba(52,211,153,0.2); }
+        .verdict-banner.amber { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.3); }
+        .verdict-banner.orange { background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.3); }
+        .verdict-banner.red { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); }
+
+        .verdict-score { font-size: 3rem; font-weight: 800; }
+        .verdict-label { font-size: 1.25rem; font-weight: 600; margin-top: 0.5rem; }
+
+        .signal-bar {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }
+        .signal-bar:last-child { border-bottom: none; }
+        .signal-name { flex: 1; font-size: 0.9rem; }
+        .signal-score-val { font-weight: 700; width: 40px; text-align: right; }
+        .signal-meter {
+            width: 120px; height: 6px;
+            background: var(--navy);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .signal-meter-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
+        .flag-icon { font-size: 1.1rem; }
+
+        .evidence-list, .steps-list { padding-left: 1.25rem; }
+        .evidence-list li, .steps-list li { margin-bottom: 0.5rem; font-size: 0.92rem; }
+
+        .obs-list { margin-top: 0.5rem; padding-left: 1rem; }
+        .obs-list li { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 0.25rem; }
+
+        @media (max-width: 640px) {
+            .container { padding: 1rem; }
+            .signal-meter { width: 80px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FB Profile Authenticity Analyzer</h1>
+        <p class="subtitle">9-signal weighted scoring engine for detecting fake Facebook profiles</p>
+
+        <div class="tabs">
+            <button class="tab active" data-tab="input">Profile Data</button>
+            <button class="tab" data-tab="results">Results</button>
+        </div>
+
+        <!-- ═══ INPUT TAB ═══ -->
+        <div id="tab-input" class="tab-content active">
+            <div class="signal-section">
+                <h3>Profile Info</h3>
+                <div class="field">
+                    <label>Profile name</label>
+                    <input type="text" id="profile_name" placeholder="Name" style="width:200px;background:var(--navy);border:1px solid var(--border);color:var(--text);padding:0.4rem 0.6rem;border-radius:6px">
+                </div>
+            </div>
+
+            <!-- Signal 1 -->
+            <div class="signal-section">
+                <h3>1. Profile Completeness <span class="weight">(10%)</span></h3>
+                <div class="field"><label>Has profile photo</label><label class="toggle"><input type="checkbox" data-path="completeness.has_profile_photo"><span class="slider"></span></label></div>
+                <div class="field"><label>Photo type</label>
+                    <select data-path="completeness.profile_photo_type">
+                        <option value="unknown">Unknown</option>
+                        <option value="real">Real</option>
+                        <option value="stock">Stock</option>
+                        <option value="ai_generated">AI Generated</option>
+                        <option value="stolen">Stolen</option>
+                    </select>
+                </div>
+                <div class="field"><label>Has cover photo</label><label class="toggle"><input type="checkbox" data-path="completeness.has_cover_photo"><span class="slider"></span></label></div>
+                <div class="field"><label>Has bio</label><label class="toggle"><input type="checkbox" data-path="completeness.has_bio"><span class="slider"></span></label></div>
+                <div class="field"><label>Bio is generic</label><label class="toggle"><input type="checkbox" data-path="completeness.bio_is_generic" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Has work history</label><label class="toggle"><input type="checkbox" data-path="completeness.has_work_history"><span class="slider"></span></label></div>
+                <div class="field"><label>Work is specific</label><label class="toggle"><input type="checkbox" data-path="completeness.work_is_specific"><span class="slider"></span></label></div>
+                <div class="field"><label>Has education</label><label class="toggle"><input type="checkbox" data-path="completeness.has_education"><span class="slider"></span></label></div>
+                <div class="field"><label>Education is specific</label><label class="toggle"><input type="checkbox" data-path="completeness.education_is_specific"><span class="slider"></span></label></div>
+                <div class="field"><label>Has relationship status</label><label class="toggle"><input type="checkbox" data-path="completeness.has_relationship_status"><span class="slider"></span></label></div>
+                <div class="field"><label>Has hometown</label><label class="toggle"><input type="checkbox" data-path="completeness.has_hometown"><span class="slider"></span></label></div>
+                <div class="field"><label>Has current city</label><label class="toggle"><input type="checkbox" data-path="completeness.has_current_city"><span class="slider"></span></label></div>
+                <div class="field"><label>Has life events</label><label class="toggle"><input type="checkbox" data-path="completeness.has_life_events"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 2 -->
+            <div class="signal-section">
+                <h3>2. Account Age vs Activity <span class="weight">(10%)</span></h3>
+                <div class="field"><label>Account age (months)</label><input type="number" data-path="activity.account_age_months" min="0" placeholder="e.g. 36"></div>
+                <div class="field"><label>Total visible posts</label><input type="number" data-path="activity.total_posts_visible" min="0" placeholder="e.g. 120"></div>
+                <div class="field"><label>First post recency (days ago)</label><input type="number" data-path="activity.first_post_recency_days" min="0" placeholder="e.g. 30"></div>
+                <div class="field"><label>Had dormant period</label><label class="toggle"><input type="checkbox" data-path="activity.had_dormant_period"><span class="slider"></span></label></div>
+                <div class="field"><label>Activity ramped up gradually</label><label class="toggle"><input type="checkbox" data-path="activity.activity_ramp_gradual" checked><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 3 -->
+            <div class="signal-section">
+                <h3>3. Friend Count & Network <span class="weight">(10%)</span></h3>
+                <div class="field"><label>Friend count</label><input type="number" data-path="network.friend_count" min="0" placeholder="e.g. 450"></div>
+                <div class="field"><label>Mutual friend count</label><input type="number" data-path="network.mutual_friend_count" min="0" placeholder="e.g. 12"></div>
+                <div class="field"><label>Friends dominated by one gender</label><label class="toggle"><input type="checkbox" data-path="network.friends_single_gender_dominant"><span class="slider"></span></label></div>
+                <div class="field"><label>Dominant gender is opposite to profile</label><label class="toggle"><input type="checkbox" data-path="network.dominant_gender_opposite_to_profile"><span class="slider"></span></label></div>
+                <div class="field"><label>Friends geographically scattered</label><label class="toggle"><input type="checkbox" data-path="network.friends_geographically_scattered"><span class="slider"></span></label></div>
+                <div class="field"><label>Friends appear fake</label><label class="toggle"><input type="checkbox" data-path="network.friends_appear_fake"><span class="slider"></span></label></div>
+                <div class="field"><label>Friend list hidden</label><label class="toggle"><input type="checkbox" data-path="network.friend_list_hidden"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 4 -->
+            <div class="signal-section">
+                <h3>4. Post Timing Clustering <span class="weight">(15%) HIGH SIGNAL</span></h3>
+                <div class="field"><label>Bulk posts within 1 hour</label><label class="toggle"><input type="checkbox" data-path="post_timing.bulk_posts_within_hour"><span class="slider"></span></label></div>
+                <div class="field"><label>Bulk pattern repeats</label><label class="toggle"><input type="checkbox" data-path="post_timing.bulk_pattern_repeats"><span class="slider"></span></label></div>
+                <div class="field"><label>Consistent exact posting times</label><label class="toggle"><input type="checkbox" data-path="post_timing.consistent_exact_times"><span class="slider"></span></label></div>
+                <div class="field"><label>Long silence then burst</label><label class="toggle"><input type="checkbox" data-path="post_timing.long_silence_then_burst"><span class="slider"></span></label></div>
+                <div class="field"><label>Timezone mismatch</label><label class="toggle"><input type="checkbox" data-path="post_timing.timezone_mismatch"><span class="slider"></span></label></div>
+                <div class="field"><label>Posts spread naturally</label><label class="toggle"><input type="checkbox" data-path="post_timing.posts_spread_naturally" checked><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 5 -->
+            <div class="signal-section">
+                <h3>5. Engagement Gender Mismatch <span class="weight">(15%) CATFISH DETECTOR</span></h3>
+                <div class="field"><label>Profile presents as</label>
+                    <select data-path="engagement_gender.profile_presents_as">
+                        <option value="female">Female</option>
+                        <option value="male">Male</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <div class="field"><label>% same-gender likes (0-100)</label><input type="number" data-path="engagement_gender.pct_same_gender_likes" min="0" max="100" placeholder="e.g. 45"></div>
+                <div class="field"><label>% same-gender comments (0-100)</label><input type="number" data-path="engagement_gender.pct_same_gender_comments" min="0" max="100" placeholder="e.g. 40"></div>
+                <div class="field"><label>Tagged photos with same-gender friends</label><label class="toggle"><input type="checkbox" data-path="engagement_gender.has_tagged_photos_with_same_gender"><span class="slider"></span></label></div>
+                <div class="field"><label>Personal comments from same gender</label><label class="toggle"><input type="checkbox" data-path="engagement_gender.has_personal_comments_from_same_gender"><span class="slider"></span></label></div>
+                <div class="field"><label>Comments are generic/thirsty</label><label class="toggle"><input type="checkbox" data-path="engagement_gender.comments_are_generic_thirsty"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 6 -->
+            <div class="signal-section">
+                <h3>6. Photo Authenticity <span class="weight">(15%) HIGH SIGNAL</span></h3>
+                <div class="field"><label>All professional quality</label><label class="toggle"><input type="checkbox" data-path="photos.all_professional_quality"><span class="slider"></span></label></div>
+                <div class="field"><label>Has casual/candid photos</label><label class="toggle"><input type="checkbox" data-path="photos.has_casual_candid_photos" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Shows progression over time</label><label class="toggle"><input type="checkbox" data-path="photos.shows_progression_over_time" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Consistent real environment</label><label class="toggle"><input type="checkbox" data-path="photos.consistent_real_environment" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Group photos tagged by others</label><label class="toggle"><input type="checkbox" data-path="photos.has_group_photos_tagged_by_others"><span class="slider"></span></label></div>
+                <div class="field"><label>Suspected AI-generated</label><label class="toggle"><input type="checkbox" data-path="photos.suspected_ai_generated"><span class="slider"></span></label></div>
+                <div class="field"><label>Reverse search matches elsewhere</label><label class="toggle"><input type="checkbox" data-path="photos.reverse_search_matches_elsewhere"><span class="slider"></span></label></div>
+                <div class="field"><label>Only selfies</label><label class="toggle"><input type="checkbox" data-path="photos.only_selfies"><span class="slider"></span></label></div>
+                <div class="field"><label>Photo quality</label>
+                    <select data-path="photos.photo_quality">
+                        <option value="mixed" selected>Mixed</option>
+                        <option value="professional">Professional</option>
+                        <option value="casual">Casual</option>
+                        <option value="ai_generated">AI Generated</option>
+                        <option value="unknown">Unknown</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Signal 7 -->
+            <div class="signal-section">
+                <h3>7. Content Pattern <span class="weight">(10%)</span></h3>
+                <div class="field"><label>Has original text posts</label><label class="toggle"><input type="checkbox" data-path="content.has_original_text_posts"><span class="slider"></span></label></div>
+                <div class="field"><label>Has personal updates</label><label class="toggle"><input type="checkbox" data-path="content.has_personal_updates"><span class="slider"></span></label></div>
+                <div class="field"><label>Has check-ins</label><label class="toggle"><input type="checkbox" data-path="content.has_check_ins"><span class="slider"></span></label></div>
+                <div class="field"><label>Birthday wishes from friends</label><label class="toggle"><input type="checkbox" data-path="content.has_birthday_wishes_from_friends"><span class="slider"></span></label></div>
+                <div class="field"><label>Has life event posts</label><label class="toggle"><input type="checkbox" data-path="content.has_life_event_posts"><span class="slider"></span></label></div>
+                <div class="field"><label>Mostly shared memes/quotes</label><label class="toggle"><input type="checkbox" data-path="content.mostly_shared_memes_quotes"><span class="slider"></span></label></div>
+                <div class="field"><label>Language matches location</label><label class="toggle"><input type="checkbox" data-path="content.language_matches_location" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Content feels like engagement bait</label><label class="toggle"><input type="checkbox" data-path="content.content_feels_engagement_bait"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 8 -->
+            <div class="signal-section">
+                <h3>8. Interaction Behavior <span class="weight">(10%)</span></h3>
+                <div class="field"><label>Sends requests to strangers</label><label class="toggle"><input type="checkbox" data-path="interaction.sends_requests_to_strangers"><span class="slider"></span></label></div>
+                <div class="field"><label>One-directional engagement</label><label class="toggle"><input type="checkbox" data-path="interaction.one_directional_engagement"><span class="slider"></span></label></div>
+                <div class="field"><label>Member of many groups</label><label class="toggle"><input type="checkbox" data-path="interaction.member_of_many_groups"><span class="slider"></span></label></div>
+                <div class="field"><label>Moves to DMs quickly</label><label class="toggle"><input type="checkbox" data-path="interaction.moves_to_dms_quickly"><span class="slider"></span></label></div>
+                <div class="field"><label>Posts relationship-seeking content</label><label class="toggle"><input type="checkbox" data-path="interaction.posts_relationship_seeking"><span class="slider"></span></label></div>
+                <div class="field"><label>Has two-way conversations</label><label class="toggle"><input type="checkbox" data-path="interaction.has_two_way_conversations" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Tagged in others' content</label><label class="toggle"><input type="checkbox" data-path="interaction.tagged_in_others_content"><span class="slider"></span></label></div>
+            </div>
+
+            <!-- Signal 9 -->
+            <div class="signal-section">
+                <h3>9. Name & Identity <span class="weight">(5%)</span></h3>
+                <div class="field"><label>Name matches apparent ethnicity</label><label class="toggle"><input type="checkbox" data-path="name_identity.name_matches_apparent_ethnicity" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Random numbers in name</label><label class="toggle"><input type="checkbox" data-path="name_identity.has_random_numbers_in_name"><span class="slider"></span></label></div>
+                <div class="field"><label>Unusual formatting</label><label class="toggle"><input type="checkbox" data-path="name_identity.unusual_formatting"><span class="slider"></span></label></div>
+                <div class="field"><label>Multiple name changes</label><label class="toggle"><input type="checkbox" data-path="name_identity.multiple_name_changes"><span class="slider"></span></label></div>
+                <div class="field"><label>Identity markers consistent</label><label class="toggle"><input type="checkbox" data-path="name_identity.identity_markers_consistent" checked><span class="slider"></span></label></div>
+                <div class="field"><label>Has vanity URL</label><label class="toggle"><input type="checkbox" data-path="name_identity.has_vanity_url" checked><span class="slider"></span></label></div>
+            </div>
+
+            <div class="btn-bar">
+                <button class="btn btn-primary" id="analyzeBtn">Analyze Profile</button>
+            </div>
+        </div>
+
+        <!-- ═══ RESULTS TAB ═══ -->
+        <div id="tab-results" class="tab-content">
+            <div id="results-container">
+                <p style="color:var(--text-dim)">Run an analysis to see results here.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    // ── Tab switching ──
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+        });
+    });
+
+    // ── Collect form data ──
+    function collectFormData() {
+        const data = {
+            profile_name: document.getElementById('profile_name').value || 'Unknown',
+            completeness: {},
+            activity: {},
+            network: {},
+            post_timing: {},
+            engagement_gender: {},
+            photos: {},
+            content: {},
+            interaction: {},
+            name_identity: {}
+        };
+
+        // Collect all toggle/select/number fields
+        document.querySelectorAll('[data-path]').forEach(el => {
+            const parts = el.dataset.path.split('.');
+            const section = parts[0];
+            const field = parts[1];
+            let value;
+
+            if (el.type === 'checkbox') {
+                value = el.checked;
+            } else if (el.type === 'number') {
+                value = el.value === '' ? null : Number(el.value);
+                // Convert percentage inputs to 0-1 range for engagement gender
+                if (section === 'engagement_gender' && (field === 'pct_same_gender_likes' || field === 'pct_same_gender_comments') && value !== null) {
+                    value = value / 100;
+                }
+            } else {
+                value = el.value;
+            }
+
+            data[section][field] = value;
+        });
+
+        return data;
+    }
+
+    // ── Render results ──
+    function meterColor(score) {
+        if (score >= 70) return 'var(--green)';
+        if (score >= 40) return 'var(--yellow)';
+        return 'var(--red)';
+    }
+
+    function flagEmoji(flag) {
+        if (flag === 'clean') return '<span class="flag-icon" title="Clean">&#9989;</span>';
+        if (flag === 'yellow') return '<span class="flag-icon" title="Yellow Flag">&#9888;&#65039;</span>';
+        return '<span class="flag-icon" title="Red Flag">&#128681;</span>';
+    }
+
+    function verdictColor(verdict) {
+        if (verdict === 'verified_real') return 'green';
+        if (verdict === 'likely_real') return 'light-green';
+        if (verdict === 'suspicious') return 'amber';
+        if (verdict === 'likely_fake') return 'orange';
+        return 'red';
+    }
+
+    function renderResults(result) {
+        const c = document.getElementById('results-container');
+        const vc = verdictColor(result.verdict);
+
+        let html = `
+            <div class="verdict-banner ${vc}">
+                <div class="verdict-score">${result.verdict_emoji} ${result.final_score}</div>
+                <div class="verdict-label">${result.verdict_label}</div>
+                <div style="color:var(--text-dim);margin-top:0.5rem">Confidence: ${result.confidence.toUpperCase()}</div>
+                ${result.catfish_override ? '<div style="color:var(--red);margin-top:0.75rem;font-weight:700">&#128680; CATFISH COMBO AUTO-FLAG TRIGGERED</div>' : ''}
+            </div>
+        `;
+
+        // Signal breakdown
+        html += '<div class="result-card"><h3 style="margin-bottom:1rem">Signal Breakdown</h3>';
+        result.signals.forEach(s => {
+            html += `
+                <div class="signal-bar">
+                    ${flagEmoji(s.flag)}
+                    <span class="signal-name">${s.signal_number}. ${s.signal_name} <span style="color:var(--text-dim);font-size:0.8rem">(${(s.weight*100).toFixed(0)}%)</span></span>
+                    <span class="signal-score-val" style="color:${meterColor(s.score)}">${s.score}</span>
+                    <div class="signal-meter">
+                        <div class="signal-meter-fill" style="width:${s.score}%;background:${meterColor(s.score)}"></div>
+                    </div>
+                </div>
+                <ul class="obs-list">${s.observations.map(o => '<li>' + o + '</li>').join('')}</ul>
+            `;
+        });
+        html += '</div>';
+
+        // Top evidence
+        html += '<div class="result-card"><h3 style="margin-bottom:0.75rem">Key Evidence</h3><ul class="evidence-list">';
+        result.top_evidence.forEach(e => { html += '<li>' + e + '</li>'; });
+        html += '</ul></div>';
+
+        // Recommendation
+        html += `<div class="result-card"><h3 style="margin-bottom:0.75rem">Recommendation</h3><p>${result.recommendation}</p></div>`;
+
+        // Next steps
+        if (result.next_steps.length > 0) {
+            html += '<div class="result-card"><h3 style="margin-bottom:0.75rem">What to Check Next</h3><ul class="steps-list">';
+            result.next_steps.forEach(s => { html += '<li>' + s + '</li>'; });
+            html += '</ul></div>';
+        }
+
+        c.innerHTML = html;
+    }
+
+    // ── Analyze button ──
+    document.getElementById('analyzeBtn').addEventListener('click', async () => {
+        const btn = document.getElementById('analyzeBtn');
+        btn.disabled = true;
+        btn.textContent = 'Analyzing...';
+
+        try {
+            const data = collectFormData();
+            const resp = await fetch('/api/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            if (!resp.ok) {
+                const err = await resp.text();
+                throw new Error(err);
+            }
+
+            const result = await resp.json();
+            renderResults(result);
+
+            // Switch to results tab
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector('[data-tab="results"]').classList.add('active');
+            document.getElementById('tab-results').classList.add('active');
+        } catch (err) {
+            alert('Analysis failed: ' + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Analyze Profile';
+        }
+    });
+    </script>
+</body>
+</html>
