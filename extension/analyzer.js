@@ -177,18 +177,17 @@ const FBAnalyzer = (() => {
   }
 
   function scorePhotos(d) {
-    let s = 65;
+    // Start neutral — we can't analyze photo content without LLM
+    let s = 70;
     const obs = [];
-    if (d.photoQualityMixed && d.hasCasualPhotos) { s += 15; obs.push("Mix of casual and professional photos"); }
-    if (d.allProfessional) { s -= 20; obs.push("All photos are professional quality"); }
+    if (d.hasGroupTagged) { s += 15; obs.push("Tagged in others' photos — strong authenticity signal"); }
+    if (d.showsProgression) { s += 5; obs.push("Photos span over time"); }
+    if (d.allProfessional) { s -= 20; obs.push("All photos look professional — possible stolen content"); }
     if (d.suspectedAI) { s -= 40; obs.push("Photos may be AI-generated"); }
-    if (d.showsProgression) { s += 10; obs.push("Photos show progression over time"); }
-    else { s -= 10; obs.push("Limited photo history"); }
-    if (d.hasGroupTagged) { s += 15; obs.push("Tagged in others' photos — strong signal"); }
-    if (d.reverseSearchMatch) { s -= 35; obs.push("Reverse search matches — likely stolen photos"); }
+    if (d.reverseSearchMatch) { s -= 35; obs.push("Reverse search matches — likely stolen"); }
     if (d.onlySelfies) { s -= 10; obs.push("Only selfies"); }
-    if (!obs.length) obs.push("Photo data looks normal");
-    return { name: "Photo Authenticity", num: 6, weight: 0.10, score: clamp(s), flag: flag(clamp(s)), obs };
+    if (!obs.length) obs.push("Photo analysis neutral — can't verify content without reverse search");
+    return { name: "Photo Authenticity", num: 6, weight: 0.08, score: clamp(s), flag: flag(clamp(s)), obs };
   }
 
   function scoreContent(d) {
@@ -248,20 +247,23 @@ const FBAnalyzer = (() => {
 
     if (d.verdict === "healthy") {
       s = 90;
-      obs.push(`${d.ratio}% avg engagement rate — healthy audience (avg ${d.avgLikes} likes)`);
+      obs.push(`${d.ratio}% engagement — healthy (avg ${d.avgLikes} likes)`);
     } else if (d.verdict === "normal") {
       s = 75;
-      obs.push(`${d.ratio}% engagement rate — normal (avg ${d.avgLikes} likes)`);
+      obs.push(`${d.ratio}% engagement — normal (avg ${d.avgLikes} likes)`);
     } else if (d.verdict === "low") {
-      s = 45;
-      obs.push(`${d.ratio}% engagement rate — low for their network size (avg ${d.avgLikes} likes)`);
+      s = 25;
+      obs.push(`Only ${d.ratio}% engagement — ${d.avgLikes} avg likes with many friends is very low`);
     } else if (d.verdict === "suspicious") {
-      s = 15;
-      obs.push(`${d.ratio}% engagement rate — very suspicious, high friends but almost no likes (avg ${d.avgLikes} likes)`);
+      s = 5;
+      obs.push(`${d.ratio}% engagement — almost no likes despite large friend list (avg ${d.avgLikes})`);
     }
 
-    // Dynamic weight: with data this is VERY important
-    const weight = hasData ? 0.15 : 0.04;
+    // Dynamic weight: low/suspicious engagement ratio is THE biggest red flag
+    let weight;
+    if (!hasData) weight = 0.04;
+    else if (d.verdict === "suspicious" || d.verdict === "low") weight = 0.22;
+    else weight = 0.12;
 
     return { name: "Engagement Ratio", num: 10, weight, score: clamp(s), flag: flag(clamp(s)), obs, hasData };
   }
@@ -327,12 +329,12 @@ const FBAnalyzer = (() => {
       redFlags++; flags.push("Spelling errors in education");
     }
 
-    // Calculate penalty: each red flag compounds
-    // 0-1 flags = no penalty, 2 = -3, 3 = -8, 4+ = -15
+    // Calculate penalty: red flags compound aggressively
+    // 0-1 = no penalty, 2 = -8, 3 = -15, 4+ = -25
     let penalty = 0;
-    if (redFlags >= 4) penalty = -15;
-    else if (redFlags >= 3) penalty = -8;
-    else if (redFlags >= 2) penalty = -3;
+    if (redFlags >= 4) penalty = -25;
+    else if (redFlags >= 3) penalty = -15;
+    else if (redFlags >= 2) penalty = -8;
 
     return { penalty, redFlags, flags };
   }
