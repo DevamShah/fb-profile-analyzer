@@ -16,7 +16,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.facebook.com/*", "https://facebook.com/*"],
-      "js": ["analyzer.js", "scraper.js", "content.js"],
+      "js": ["analyzer.js", "collector.js", "content.js"],
       "css": ["overlay.css"],
       "run_at": "document_idle"
     }

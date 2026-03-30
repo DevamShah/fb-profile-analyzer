@@ -1,6 +1,7 @@
 /**
  * Content script — runs on Facebook profile pages.
- * Scrapes the DOM, runs the analyzer, and injects the verdict overlay.
+ * Uses FBCollector for deep async scanning, FBAnalyzer for scoring.
+ * Shows progress overlay during scan, then verdict overlay.
  */
 
 (() => {
@@ -8,9 +9,9 @@
 
   let overlayVisible = false;
   let lastResult = null;
-  let analyzeTimeout = null;
+  let scanning = false;
 
-  // ── Build overlay HTML ───────────────────────────────────────────────
+  // ── Flag/meter helpers ───────────────────────────────────────────────
 
   function flagIcon(f) {
     if (f === "clean") return "\u2705";
@@ -24,13 +25,43 @@
     return "#ef4444";
   }
 
-  function renderOverlay(result) {
-    // Remove existing
-    const existing = document.getElementById("fba-overlay");
-    if (existing) existing.remove();
+  // ── Progress overlay ─────────────────────────────────────────────────
 
-    const panel = document.createElement("div");
-    panel.id = "fba-overlay";
+  function showProgress(message, pct) {
+    let panel = document.getElementById("fba-overlay");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "fba-overlay";
+      document.body.appendChild(panel);
+      requestAnimationFrame(() => panel.classList.add("fba-visible"));
+    }
+
+    panel.innerHTML = `
+      <div class="fba-header">
+        <div class="fba-title">Profile Analyzer</div>
+        <div style="color:#64748b;font-size:11px">Scanning...</div>
+      </div>
+      <div style="padding:24px 16px;text-align:center">
+        <div class="fba-scanning-spinner"></div>
+        <div style="margin-top:16px;font-size:13px;color:#94a3b8">${message}</div>
+        <div class="fba-progress-bar">
+          <div class="fba-progress-fill" style="width:${pct}%"></div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:#475569">${pct}% complete</div>
+      </div>
+    `;
+    overlayVisible = true;
+  }
+
+  // ── Verdict overlay ──────────────────────────────────────────────────
+
+  function showVerdict(result) {
+    let panel = document.getElementById("fba-overlay");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "fba-overlay";
+      document.body.appendChild(panel);
+    }
 
     const signalRows = result.signals.map(s => `
       <div class="fba-signal-row">
@@ -85,26 +116,21 @@
       </div>
     `;
 
-    document.body.appendChild(panel);
+    panel.classList.add("fba-visible");
+    panel.classList.remove("fba-hidden");
     overlayVisible = true;
 
-    // Event handlers
     document.getElementById("fba-close").addEventListener("click", () => {
       panel.classList.add("fba-hidden");
       overlayVisible = false;
     });
 
     document.getElementById("fba-rescan").addEventListener("click", () => {
-      runAnalysis();
-    });
-
-    // Animate in
-    requestAnimationFrame(() => {
-      panel.classList.add("fba-visible");
+      if (!scanning) runAnalysis();
     });
   }
 
-  // ── Floating trigger button ──────────────────────────────────────────
+  // ── Trigger button ───────────────────────────────────────────────────
 
   function injectTriggerButton() {
     if (document.getElementById("fba-trigger")) return;
@@ -118,10 +144,13 @@
       <span>Scan Profile</span>
     `;
     btn.addEventListener("click", () => {
+      if (scanning) return;
       if (overlayVisible) {
         const overlay = document.getElementById("fba-overlay");
-        if (overlay) overlay.classList.toggle("fba-hidden");
-        overlayVisible = !overlayVisible;
+        if (overlay) {
+          overlay.classList.toggle("fba-hidden");
+          overlayVisible = !overlayVisible;
+        }
       } else {
         runAnalysis();
       }
@@ -130,19 +159,44 @@
     document.body.appendChild(btn);
   }
 
-  // ── Run analysis ─────────────────────────────────────────────────────
+  // ── Run deep analysis ────────────────────────────────────────────────
 
-  function runAnalysis() {
-    const profileData = FBScraper.scrapeProfile();
-    if (!profileData) {
-      console.log("[FBA] Not a profile page — skipping");
-      return;
+  async function runAnalysis() {
+    if (scanning) return;
+    scanning = true;
+
+    // Update trigger button
+    const btn = document.getElementById("fba-trigger");
+    if (btn) {
+      btn.querySelector("span").textContent = "Scanning...";
+      btn.style.opacity = "0.6";
     }
 
-    console.log("[FBA] Scraped profile data:", profileData);
-    lastResult = FBAnalyzer.analyze(profileData);
-    console.log("[FBA] Analysis result:", lastResult);
-    renderOverlay(lastResult);
+    try {
+      const profileData = await FBCollector.collectProfile((msg, pct) => {
+        showProgress(msg, pct || 0);
+      });
+
+      if (!profileData) {
+        console.log("[FBA] Not a profile page or couldn't determine name");
+        const panel = document.getElementById("fba-overlay");
+        if (panel) panel.remove();
+        return;
+      }
+
+      lastResult = FBAnalyzer.analyze(profileData);
+      console.log("[FBA] Analysis result:", lastResult);
+      showVerdict(lastResult);
+
+    } catch (err) {
+      console.error("[FBA] Analysis error:", err);
+    } finally {
+      scanning = false;
+      if (btn) {
+        btn.querySelector("span").textContent = "Scan Profile";
+        btn.style.opacity = "1";
+      }
+    }
   }
 
   // ── Listen for messages from popup ───────────────────────────────────
@@ -150,48 +204,62 @@
   if (typeof chrome !== "undefined" && chrome.runtime) {
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.action === "analyze") {
-        runAnalysis();
-        sendResponse({ success: true, result: lastResult });
+        runAnalysis().then(() => {
+          sendResponse({ success: true, result: lastResult });
+        });
+        return true; // async response
       } else if (msg.action === "getResult") {
-        sendResponse({ result: lastResult, isProfile: FBScraper.isProfilePage() });
+        const name = FBCollector.getProfileName();
+        const isProfile = name !== "Unknown" && !FBCollector.NON_NAMES.has(name.toLowerCase());
+        sendResponse({ result: lastResult, isProfile });
       }
     });
   }
 
   // ── Initialize ───────────────────────────────────────────────────────
 
-  function init() {
-    if (!FBScraper.isProfilePage()) return;
-    injectTriggerButton();
-
-    // Auto-analyze after a short delay (let FB render)
-    analyzeTimeout = setTimeout(() => {
-      runAnalysis();
-    }, 2000);
+  function isProfileUrl() {
+    const path = window.location.pathname;
+    const nonRoutes = [
+      "watch", "groups", "events", "marketplace", "gaming",
+      "search", "notifications", "messages", "settings",
+      "stories", "reels", "feeds", "bookmarks", "pages",
+      "friends", "photo", "videos", "hashtag", "help",
+      "login", "recover", "checkpoint", "privacy", "policies",
+    ];
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length >= 1 && nonRoutes.includes(segments[0])) return false;
+    if (window.location.href.includes("/profile.php")) return true;
+    if (window.location.href.includes("/people/")) return true;
+    if (segments.length === 1) return true;
+    return false;
   }
 
-  // Handle Facebook's SPA navigation
+  function init() {
+    if (!isProfileUrl()) return;
+    injectTriggerButton();
+    // Don't auto-scan anymore — wait for user click (deep scan navigates tabs)
+  }
+
+  // Handle Facebook SPA navigation
   let lastUrl = location.href;
   const observer = new MutationObserver(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      clearTimeout(analyzeTimeout);
 
-      // Clean up old UI
       const oldOverlay = document.getElementById("fba-overlay");
       if (oldOverlay) oldOverlay.remove();
       const oldBtn = document.getElementById("fba-trigger");
       if (oldBtn) oldBtn.remove();
       overlayVisible = false;
       lastResult = null;
+      scanning = false;
 
-      // Re-init after navigation
       setTimeout(init, 1500);
     }
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Initial run
   if (document.readyState === "complete") {
     init();
   } else {
