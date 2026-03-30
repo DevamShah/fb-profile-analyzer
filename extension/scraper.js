@@ -69,14 +69,25 @@ const FBScraper = (() => {
 
   /** Get the profile name from <h1> or page title. */
   function getProfileName() {
-    // Facebook profile pages have the name in an h1
+    const nonNameTitles = [
+      "notifications", "messages", "watch", "marketplace", "groups",
+      "events", "settings", "friends", "search", "gaming", "feeds",
+      "stories", "reels", "bookmarks", "pages", "saved", "menu",
+      "facebook", "log in", "sign up", "home",
+    ];
+
     const h1s = $$("h1");
     for (const h of h1s) {
       const t = h.textContent.trim();
-      // Skip h1s that are clearly not the name (too long, or generic)
-      if (t.length > 0 && t.length < 60 && !t.includes("Facebook")) return t;
+      if (t.length > 0 && t.length < 60 &&
+          !nonNameTitles.includes(t.toLowerCase()) &&
+          !t.includes("Facebook")) {
+        return t;
+      }
     }
-    return document.title.replace(/\s*[-|]\s*Facebook.*$/i, "").trim() || "Unknown";
+    const title = document.title.replace(/\s*[-|(\s]*Facebook.*$/i, "").trim();
+    if (title && !nonNameTitles.includes(title.toLowerCase())) return title;
+    return "Unknown";
   }
 
   // ── Profile page detection ───────────────────────────────────────────
@@ -112,8 +123,13 @@ const FBScraper = (() => {
       "watch", "groups", "events", "marketplace", "gaming",
       "search", "notifications", "messages", "settings",
       "stories", "reels", "feeds", "bookmarks", "pages",
+      "friends", "photo", "videos", "hashtag", "help",
+      "login", "recover", "checkpoint", "privacy", "policies",
+      "ads", "business", "creators", "fundraisers", "saved",
+      "weather", "jobs", "blood_donations", "crisisresponse",
     ];
-    if (segments.length === 1 && !nonProfileRoutes.includes(segments[0])) return true;
+    if (segments.length >= 1 && nonProfileRoutes.includes(segments[0])) return false;
+    if (segments.length === 1) return true;
 
     return false;
   }
