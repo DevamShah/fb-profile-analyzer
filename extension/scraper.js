@@ -68,25 +68,34 @@ const FBScraper = (() => {
   }
 
   /** Get the profile name from <h1> or page title. */
-  function getProfileName() {
-    const nonNameTitles = [
-      "notifications", "messages", "watch", "marketplace", "groups",
-      "events", "settings", "friends", "search", "gaming", "feeds",
-      "stories", "reels", "bookmarks", "pages", "saved", "menu",
-      "facebook", "log in", "sign up", "home",
-    ];
+  const NON_NAME_WORDS = new Set([
+    "notifications", "messages", "watch", "marketplace", "groups",
+    "events", "settings", "friends", "search", "gaming", "feeds",
+    "stories", "reels", "bookmarks", "pages", "saved", "menu",
+    "facebook", "log in", "sign up", "home", "news feed",
+    "what's on your mind?", "find friends", "create",
+  ]);
 
+  function isNonName(t) {
+    return NON_NAME_WORDS.has(t.toLowerCase().trim());
+  }
+
+  function getProfileName() {
+    // PRIMARY: page <title> — most reliable on Facebook
+    // Format: "Devam Shah | Facebook" or "Devam Shah - Facebook"
+    const title = document.title
+      .replace(/\s*[-|(\s]*Facebook.*$/i, "")
+      .replace(/^\(\d+\)\s*/, "")  // Remove "(3) " notification count prefix
+      .trim();
+    if (title && title.length < 60 && !isNonName(title)) return title;
+
+    // FALLBACK: h1 elements — skip known non-name titles
     const h1s = $$("h1");
     for (const h of h1s) {
       const t = h.textContent.trim();
-      if (t.length > 0 && t.length < 60 &&
-          !nonNameTitles.includes(t.toLowerCase()) &&
-          !t.includes("Facebook")) {
-        return t;
-      }
+      if (t.length > 1 && t.length < 60 && !isNonName(t)) return t;
     }
-    const title = document.title.replace(/\s*[-|(\s]*Facebook.*$/i, "").trim();
-    if (title && !nonNameTitles.includes(title.toLowerCase())) return title;
+
     return "Unknown";
   }
 
@@ -187,22 +196,34 @@ const FBScraper = (() => {
     d.hasCoverPhoto = !!(coverByAria || (coverByPagelet && coverByPagelet.querySelector("img, svg")) || topImgs.length > 0);
 
     // ── Bio / Description text ──
-    // Check for "Intro", "Personal details", or descriptive text under the name
-    const bioSections = findContains("intro", "personal details", "details");
-    const hasDescText = findContains(
-      "ciso", "ceo", "founder", "developer", "engineer", "creator",
-      "designer", "manager", "director", "artist", "writer",
-      "digital creator", "content creator", "public figure",
-      "entrepreneur", "consultant", "coach"
-    );
-    // Also look for any tagline / bio text under the name
-    const bioInPage = pt.includes("ciso") || pt.includes("digital creator") ||
-      pt.includes("content creator") || pt.includes("about me") ||
-      bioSections.length > 0 || hasDescText.length > 0;
+    // Facebook shows bio/tagline directly under the name in various ways:
+    // 1. "Intro" section on others' profiles
+    // 2. "Personal details" on own profile
+    // 3. Tagline text under the name (e.g., "Ciso of the year...")
+    // 4. Role labels like "Digital creator"
+    // 5. "About" section text
 
-    if (bioInPage) {
+    const bioIndicators = [
+      // Section headers
+      ...findContains("intro", "personal details", "details", "about"),
+      // Role/title labels visible on profile
+      ...findContains(
+        "digital creator", "content creator", "public figure",
+        "entrepreneur", "artist", "musician", "athlete", "author",
+        "ciso", "ceo", "cto", "founder", "developer", "engineer",
+        "designer", "manager", "director", "writer", "coach",
+        "consultant", "photographer", "blogger", "influencer",
+      ),
+    ];
+
+    // Also check the full page text for bio patterns
+    const hasBioText =
+      pt.includes("digital creator") || pt.includes("content creator") ||
+      pt.includes("public figure") || pt.includes("about me") ||
+      /\b(ciso|ceo|cto|founder|developer|engineer|designer|creator)\b/i.test(pt);
+
+    if (bioIndicators.length > 0 || hasBioText) {
       d.hasBio = true;
-      // Check if bio is generic vs specific
       const genericPhrases = ["living life", "just me", "blessed", "god is good",
         "vibes only", "no bio", "living my best", "it is what it is"];
       d.bioIsGeneric = genericPhrases.some(p => pt.includes(p));
@@ -549,13 +570,15 @@ const FBScraper = (() => {
     const tagged = findContains("photos of " + name, "tagged photos", "photos of you");
     d.hasGroupTagged = tagged.length > 0;
 
-    // Look for album variety (mobile uploads = casual photos)
-    const albums = findContains("mobile uploads", "timeline photos", "cover photos", "profile pictures");
-    if (albums.length >= 2) {
+    // Look for album variety and casual photo indicators
+    const albums = findContains(
+      "mobile uploads", "timeline photos", "cover photos",
+      "profile pictures", "photo", "album", "uploads"
+    );
+    // If there's a Photos tab AND images visible, assume casual photos exist
+    if (hasPhotosSection || albums.length >= 1) {
       d.hasCasualPhotos = true;
       d.photoQualityMixed = true;
-    } else if (allImgs.length > 5 && albums.length === 0) {
-      d.hasCasualPhotos = false;
     }
 
     // Check visible photos section link for count
@@ -629,9 +652,10 @@ const FBScraper = (() => {
       manyGroups: false, dmPivot: false, relationshipSeeking: false,
     };
 
-    // Nested articles = comment replies = two-way conversations
+    // Two-way conversations — nested articles or visible comment counts
     const nestedArticles = $$('[role="article"] [role="article"]');
-    d.twoWayConversations = nestedArticles.length >= 2;
+    const commentIndicators = findSpans(/\d+\s*comments?/i);
+    d.twoWayConversations = nestedArticles.length >= 2 || commentIndicators.length >= 2;
 
     // Tagged by others — check for tag patterns and "Photos of" section
     const name = getProfileName().split(" ")[0].toLowerCase();
@@ -700,8 +724,12 @@ const FBScraper = (() => {
 
     if (!isProfilePage()) return null;
 
+    const name = getProfileName();
+    // If we can't determine a real profile name, we're not on a profile page
+    if (name === "Unknown" || isNonName(name)) return null;
+
     const data = {
-      profileName: getProfileName(),
+      profileName: name,
       completeness: scrapeCompleteness(),
       activity: scrapeActivity(),
       network: scrapeNetwork(),
