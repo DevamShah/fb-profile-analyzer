@@ -95,7 +95,10 @@ const FBScraper = (() => {
     if (document.querySelector('[aria-label*="profile picture" i]')) return true;
     if (document.querySelector('[aria-label*="Cover photo" i]')) return true;
 
-    // Check for "Add Friend" or "Message" or "Following" buttons (profile actions)
+    // Own profile markers
+    if (findContains("update your profile", "dashboard", "edit profile").length > 0) return true;
+
+    // Other people's profile markers
     const profileActions = findContains("add friend", "message", "following", "follow");
     const hasProfileButtons = profileActions.some(o => {
       const tag = o.el.tagName.toLowerCase();
@@ -127,73 +130,134 @@ const FBScraper = (() => {
       hasCurrentCity: false, hasLifeEvents: false,
     };
 
-    // Profile photo — look for large circular image or aria-label
+    const pt = pageText();
+
+    // ── Profile photo ──
+    // Method 1: aria-label
     const pfpByAria = document.querySelector(
-      '[aria-label*="profile picture" i], [aria-label*="Profile photo" i]'
+      '[aria-label*="profile picture" i], [aria-label*="Profile photo" i], [aria-label*="profile photo" i]'
     );
+    // Method 2: SVG images (FB renders profile pics inside SVGs)
     const svgImages = $$("svg image, image[href], image[xlink\\:href]");
     const largeSvgImg = svgImages.find(img => {
       const w = parseInt(img.getAttribute("width") || img.getAttribute("height") || "0");
-      return w >= 100;
+      return w >= 80;
     });
+    // Method 3: Large circular image near the name (structural)
+    const h1 = document.querySelector("h1");
+    let nearbyImg = null;
+    if (h1) {
+      const parent = h1.closest("div");
+      if (parent) nearbyImg = parent.parentElement?.querySelector("img, svg image");
+    }
 
-    if (pfpByAria || largeSvgImg) {
+    if (pfpByAria || largeSvgImg || nearbyImg) {
       d.hasProfilePhoto = true;
       d.profilePhotoType = "real";
     }
 
-    // Cover photo
+    // ── Cover photo ──
+    // Method 1: aria-label
     const coverByAria = document.querySelector(
       '[aria-label*="cover photo" i], [aria-label*="Cover photo" i]'
     );
-    const coverByPagelet = document.querySelector('[data-pagelet*="Cover" i]');
-    d.hasCoverPhoto = !!(coverByAria || (coverByPagelet && coverByPagelet.querySelector("img")));
+    // Method 2: data-pagelet
+    const coverByPagelet = document.querySelector('[data-pagelet*="Cover" i], [data-pagelet*="cover" i]');
+    // Method 3: Large image at very top of page (cover photos are typically the first large img)
+    const topImgs = $$("img").filter(img => {
+      const rect = img.getBoundingClientRect();
+      return rect.top < 300 && rect.width > 400;
+    });
+    d.hasCoverPhoto = !!(coverByAria || (coverByPagelet && coverByPagelet.querySelector("img, svg")) || topImgs.length > 0);
 
-    // Work — "Works at X", "Worked at X"
-    const workSpans = findSpans(/works?\s+at\s/i);
-    if (workSpans.length > 0) {
-      d.hasWork = true;
-      const workText = workSpans[0].lower;
-      const vagueJobs = ["self-employed", "freelancer", "entrepreneur", "ceo", "boss", "own business"];
-      d.workIsSpecific = !vagueJobs.some(v => workText.includes(v));
-    }
+    // ── Bio / Description text ──
+    // Check for "Intro", "Personal details", or descriptive text under the name
+    const bioSections = findContains("intro", "personal details", "details");
+    const hasDescText = findContains(
+      "ciso", "ceo", "founder", "developer", "engineer", "creator",
+      "designer", "manager", "director", "artist", "writer",
+      "digital creator", "content creator", "public figure",
+      "entrepreneur", "consultant", "coach"
+    );
+    // Also look for any tagline / bio text under the name
+    const bioInPage = pt.includes("ciso") || pt.includes("digital creator") ||
+      pt.includes("content creator") || pt.includes("about me") ||
+      bioSections.length > 0 || hasDescText.length > 0;
 
-    // Education — "Studied at X", "Went to X", "Goes to X"
-    const eduSpans = findSpans(/(?:studied|went|goes)\s+(?:at|to)\s/i);
-    if (eduSpans.length > 0) {
-      d.hasEducation = true;
-      const eduText = eduSpans[0].lower;
-      const vagueEdu = ["school of hard knocks", "university of life", "school of life", "life"];
-      d.educationIsSpecific = !vagueEdu.some(v => eduText.includes(v));
-    }
-
-    // Current city — "Lives in X"
-    const livesIn = findSpans(/lives\s+in\s/i);
-    d.hasCurrentCity = livesIn.length > 0;
-
-    // Hometown — "From X"
-    const fromSpans = findStartsWith("from ");
-    // Filter out false positives (too long = probably not the intro item)
-    d.hasHometown = fromSpans.some(o => o.text.length < 50);
-
-    // Relationship — look for status keywords in intro area
-    const relKeywords = findContains("married", "in a relationship", "engaged", "single", "divorced", "widowed");
-    d.hasRelationship = relKeywords.some(o => o.text.length < 60);
-
-    // Bio / Intro text — look for quoted text or short descriptive spans near intro
-    const introLabel = findContains("intro");
-    if (introLabel.length > 0) {
+    if (bioInPage) {
       d.hasBio = true;
-      // Check the nearby area for generic vs specific content
-      const pt = pageText();
+      // Check if bio is generic vs specific
       const genericPhrases = ["living life", "just me", "blessed", "god is good",
-        "vibes only", "king", "queen", "no bio", "living my best"];
+        "vibes only", "no bio", "living my best", "it is what it is"];
       d.bioIsGeneric = genericPhrases.some(p => pt.includes(p));
     }
 
-    // Life events — "Joined Facebook", year milestones
-    const lifeEvents = findContains("joined facebook", "life event", "got married", "had a baby", "moved to");
-    d.hasLifeEvents = lifeEvents.length > 0;
+    // ── Work / Professional role ──
+    // Method 1: "Works at X", "Worked at X"
+    const workAt = findSpans(/works?\s+at\s/i);
+    // Method 2: Role labels (Digital creator, Company names, etc.)
+    const roleLabels = findContains(
+      "digital creator", "content creator", "public figure",
+      "entrepreneur", "artist", "musician", "athlete", "author"
+    );
+    // Method 3: Company/org names shown with icons (look for short spans near intro)
+    // On FB profiles, work appears as just a company name in the intro section
+    if (workAt.length > 0) {
+      d.hasWork = true;
+      const workText = workAt[0].lower;
+      const vagueJobs = ["self-employed", "freelancer", "entrepreneur"];
+      d.workIsSpecific = !vagueJobs.some(v => workText.includes(v));
+    } else if (roleLabels.length > 0) {
+      d.hasWork = true;
+      d.workIsSpecific = true;
+    }
+    // Method 4: Check full page text for work patterns
+    if (!d.hasWork && /(?:works?\s+at|employed|job|profession|occupation)/i.test(pt)) {
+      d.hasWork = true;
+      d.workIsSpecific = true;
+    }
+
+    // ── Education ──
+    const eduSpans = findSpans(/(?:studied|went|goes|studies)\s+(?:at|to)\s/i);
+    if (eduSpans.length > 0) {
+      d.hasEducation = true;
+      const eduText = eduSpans[0].lower;
+      const vagueEdu = ["school of hard knocks", "university of life"];
+      d.educationIsSpecific = !vagueEdu.some(v => eduText.includes(v));
+    }
+
+    // ── Current city ──
+    // "Lives in Mumbai, Maharashtra" — also handle text with lock icons
+    const livesIn = findSpans(/lives?\s+in\s/i);
+    if (livesIn.length > 0) {
+      d.hasCurrentCity = true;
+    } else if (pt.includes("lives in ")) {
+      d.hasCurrentCity = true;
+    }
+
+    // ── Hometown ──
+    // "From Ahmedabad, India" — find spans or page text
+    const fromSpans = findSpans(/^from\s+[A-Z]/);
+    if (fromSpans.length > 0) {
+      d.hasHometown = true;
+    } else {
+      // Fallback: search in page text for "From [City]" pattern
+      const fromMatch = pt.match(/from\s+[a-z][a-z\s,]+(?:india|usa|uk|canada|australia|[a-z]+)/i);
+      if (fromMatch) d.hasHometown = true;
+    }
+
+    // ── Relationship ──
+    const relKeywords = findContains("married", "in a relationship", "engaged", "single", "divorced", "widowed");
+    d.hasRelationship = relKeywords.some(o => o.text.length < 60);
+
+    // ── Life events ──
+    const lifeEvents = findContains(
+      "joined facebook", "life event", "got married", "had a baby",
+      "moved to", "started a new job", "15 december", "birthday"
+    );
+    // Also check for date patterns in Personal details (like "15 December")
+    const datePatterns = findSpans(/^\d{1,2}\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)/i);
+    d.hasLifeEvents = lifeEvents.length > 0 || datePatterns.length > 0;
 
     return d;
   }
@@ -442,17 +506,26 @@ const FBScraper = (() => {
       reverseSearchMatch: false, onlySelfies: false,
     };
 
-    // Count all visible photos on page
+    // Count all visible photos on page (skip tiny icons/emojis)
     const allImgs = $$("img").filter(img => {
-      const w = img.naturalWidth || parseInt(img.getAttribute("width") || "0");
-      const h = img.naturalHeight || parseInt(img.getAttribute("height") || "0");
-      return (w > 100 || h > 100); // Skip tiny icons
+      const rect = img.getBoundingClientRect();
+      return rect.width > 80 && rect.height > 80;
     });
 
-    if (allImgs.length < 3) {
+    // Check if Photos tab exists (means user has photos)
+    const photosTab = findContains("photos");
+    const hasPhotosSection = photosTab.some(o => {
+      return o.el.tagName === "A" || o.el.closest("a");
+    });
+
+    if (allImgs.length < 3 && !hasPhotosSection) {
       d.photoQualityMixed = false;
       d.hasCasualPhotos = false;
       d.showsProgression = false;
+    } else if (hasPhotosSection) {
+      // Has a photos tab = likely has photos over time
+      d.showsProgression = true;
+      d.hasCasualPhotos = true;
     }
 
     // "Photos of [Name]" or "Tagged Photos" section
@@ -544,12 +617,13 @@ const FBScraper = (() => {
     const nestedArticles = $$('[role="article"] [role="article"]');
     d.twoWayConversations = nestedArticles.length >= 2;
 
-    // Tagged by others
+    // Tagged by others — check for tag patterns and "Photos of" section
     const name = getProfileName().split(" ")[0].toLowerCase();
     const tagged = findContains("was with " + name, "tagged " + name, "— with " + name);
-    // Also check for generic "with" patterns
     const withPatterns = findContains("was with", "is with", "— with");
-    d.taggedByOthers = tagged.length > 0 || withPatterns.length >= 3;
+    // Also: "Photos" and "Reels" tabs existing = active social presence
+    const socialTabs = findContains("reels", "photos", "videos", "check-ins");
+    d.taggedByOthers = tagged.length > 0 || withPatterns.length >= 3 || socialTabs.length >= 2;
 
     // Relationship seeking
     const pt = pageText();
