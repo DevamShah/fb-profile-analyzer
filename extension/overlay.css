@@ -1,0 +1,234 @@
+/* ── FB Profile Analyzer — Overlay Styles ─────────────────────────── */
+
+#fba-overlay {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 360px;
+  max-height: calc(100vh - 100px);
+  overflow-y: auto;
+  background: #0a1628;
+  border: 1px solid #1e3a6e;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(79, 142, 247, 0.1);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e2e8f0;
+  z-index: 2147483647;
+  opacity: 0;
+  transform: translateX(20px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#fba-overlay.fba-visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+#fba-overlay.fba-hidden {
+  opacity: 0;
+  transform: translateX(20px);
+  pointer-events: none;
+}
+
+/* Scrollbar */
+#fba-overlay::-webkit-scrollbar { width: 4px; }
+#fba-overlay::-webkit-scrollbar-track { background: transparent; }
+#fba-overlay::-webkit-scrollbar-thumb { background: #1e3a6e; border-radius: 2px; }
+
+/* ── Header ── */
+.fba-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #1e3a6e;
+}
+
+.fba-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #4f8ef7;
+  letter-spacing: 0.3px;
+}
+
+.fba-close {
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.fba-close:hover {
+  color: #e2e8f0;
+  background: #1e3a6e;
+}
+
+/* ── Verdict Box ── */
+.fba-verdict-box {
+  text-align: center;
+  padding: 20px 16px;
+  margin: 12px;
+  border-radius: 12px;
+  border: 1px solid;
+}
+
+.fba-score {
+  font-size: 42px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.fba-verdict-label {
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 6px;
+}
+
+.fba-catfish-badge {
+  margin-top: 10px;
+  padding: 6px 12px;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 6px;
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* ── Sections ── */
+.fba-section {
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.fba-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 8px;
+}
+
+/* ── Signal Rows ── */
+.fba-signal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+}
+
+.fba-flag { font-size: 12px; width: 18px; text-align: center; }
+.fba-sig-name { flex: 1; font-size: 12px; color: #94a3b8; }
+.fba-sig-score { font-weight: 700; font-size: 13px; width: 28px; text-align: right; }
+
+.fba-meter {
+  width: 60px;
+  height: 4px;
+  background: #132042;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.fba-meter-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+
+/* ── Evidence + Steps ── */
+.fba-evidence, .fba-steps {
+  padding-left: 16px;
+  margin: 0;
+}
+
+.fba-evidence li, .fba-steps li {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+  line-height: 1.4;
+}
+
+.fba-evidence li strong {
+  color: #cbd5e1;
+}
+
+/* ── Recommendation ── */
+.fba-rec {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 12px;
+  background: #132042;
+  border-radius: 8px;
+  line-height: 1.4;
+}
+
+/* ── Footer ── */
+.fba-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-top: 1px solid #1e3a6e;
+}
+
+.fba-rescan {
+  background: #4f8ef7;
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.fba-rescan:hover {
+  background: #3a6bc5;
+}
+
+.fba-branding {
+  font-size: 10px;
+  color: #475569;
+}
+
+/* ── Trigger Button ── */
+#fba-trigger {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #0a1628;
+  color: #4f8ef7;
+  border: 1px solid #1e3a6e;
+  padding: 10px 18px;
+  border-radius: 50px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 2147483646;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#fba-trigger:hover {
+  background: #132042;
+  border-color: #4f8ef7;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+#fba-trigger svg {
+  flex-shrink: 0;
+}
